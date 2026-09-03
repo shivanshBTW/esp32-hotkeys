@@ -52,6 +52,9 @@ struct HotkeysStatus {
     int action_count{0};
     int last_id{-1};
     int last_key{-1};
+    std::uint16_t last_scan_bits{0};
+    std::uint16_t last_down_bits{0};
+    std::uint16_t last_ghost_bits{0};
     int last_http_status{0};
     std::string last_error;
     std::uint32_t last_fire_ms{0};

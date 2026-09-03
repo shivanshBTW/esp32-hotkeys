@@ -263,6 +263,9 @@ HotkeysStatus HotkeysService::status() const {
     st.action_count = action_count();
     st.last_id = last_id_;
     st.last_key = last_key_;
+    st.last_scan_bits = scan_stable_;
+    st.last_down_bits = last_down_bits_;
+    st.last_ghost_bits = last_ghost_bits_;
     st.last_http_status = last_http_status_;
     st.last_error = last_error_;
     st.last_fire_ms = last_fire_ms_;
@@ -293,6 +296,9 @@ cJSON* HotkeysService::to_json(bool include_secrets) const {
     cJSON_AddNumberToObject(root, "action_count", action_count());
     cJSON_AddNumberToObject(root, "last_id", last_id_);
     cJSON_AddNumberToObject(root, "last_key", last_key_);
+    cJSON_AddNumberToObject(root, "last_scan_bits", scan_stable_);
+    cJSON_AddNumberToObject(root, "last_down_bits", last_down_bits_);
+    cJSON_AddNumberToObject(root, "last_ghost_bits", last_ghost_bits_);
     cJSON_AddNumberToObject(root, "last_http_status", last_http_status_);
     cJSON_AddStringToObject(root, "last_error", last_error_.c_str());
     cJSON_AddNumberToObject(root, "last_fire_ms", last_fire_ms_);
@@ -599,6 +605,9 @@ void HotkeysService::release_keypad_pins() {
     active_cols_ = {0, 0, 0, 0};
     scan_raw_ = 0;
     scan_stable_ = 0;
+    scan_same_ = 0;
+    last_down_bits_ = 0;
+    last_ghost_bits_ = 0;
 }
 
 void HotkeysService::configure_keypad() {
@@ -666,29 +675,55 @@ void HotkeysService::scan_once() {
     std::uint16_t bits = 0;
     for (int r = 0; r < 4; ++r) {
         gpio_set_level(static_cast<gpio_num_t>(active_rows_[r]), 0);
-        esp_rom_delay_us(30);
+        esp_rom_delay_us(250);
         for (int c = 0; c < 4; ++c) {
             if (gpio_get_level(static_cast<gpio_num_t>(active_cols_[c])) == 0) {
                 bits = static_cast<std::uint16_t>(bits | (1u << (r * 4 + c)));
             }
         }
         gpio_set_level(static_cast<gpio_num_t>(active_rows_[r]), 1);
+        esp_rom_delay_us(80);
     }
     if (bits != scan_raw_) {
+        if (scan_raw_ != 0 && bits != 0 && bits != scan_stable_) {
+            log.info("keypad bounce raw=0x%04x prev=0x%04x", bits, scan_raw_);
+        }
         scan_raw_ = bits;
+        scan_same_ = 1;
+        return;
+    }
+    if (scan_same_ < 3) {
+        ++scan_same_;
         return;
     }
     if (bits == scan_stable_) {
         return;
     }
+
+    const int nkeys = __builtin_popcount(bits);
     const std::uint16_t down = static_cast<std::uint16_t>(bits & ~scan_stable_);
+    last_down_bits_ = down;
+    if (nkeys > 1) {
+        if (bits != last_ghost_bits_) {
+            last_ghost_bits_ = bits;
+            log.warn("keypad ghost raw=0x%04x keys=%d down=0x%04x (ignored)", bits, nkeys, down);
+        }
+        return;
+    }
+
     scan_stable_ = bits;
+    if (down == 0) {
+        log.info("keypad release now=0x%04x", bits);
+        return;
+    }
     for (int i = 0; i < kHotkeySlotCount; ++i) {
         if ((down & (1u << i)) == 0) {
             continue;
         }
         last_key_ = i;
-        log.info("keypad press slot=%d", i);
+        const auto& a = settings_.actions[i];
+        log.info("keypad press slot=%d name=%s type=%s raw=0x%04x", i, a.name.c_str(),
+                 hotkey_type_to_str(a.type), bits);
         test_fire(i);
     }
 }

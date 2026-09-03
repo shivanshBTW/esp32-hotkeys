@@ -116,6 +116,7 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 <h2>Keypad pins</h2>
 <p class="hint">4×4 membrane: rows are outputs, cols are inputs with pull-ups. Suggested on this ESP32 (buzzer is 23): R1–R4 = 16 17 18 19, C1–C4 = 21 22 25 26. Avoid 13, 14, 23, and 34–39 for rows. Slot 0 is R1+C1 (top-left).</p>
 <p id="kpScan" class="hint">Scan off.</p>
+<p id="kpLog" class="hint">Keypad log: waiting for a press.</p>
 <label>Rows R1–R4</label>
 <div class="grid4">
   <input id="row0" type="number" min="0" max="39" value="16" title="R1"/>
@@ -268,6 +269,23 @@ function showTab(name){
   }
 }
 function dash(v){ return (v==null || v==='')?'—':v; }
+function bitsHex(n){ return '0x'+((Number(n)||0)&0xffff).toString(16).padStart(4,'0'); }
+function bitsSlots(n){
+  const s=[];
+  n=Number(n)||0;
+  for(let i=0;i<16;i++) if(n&(1<<i)) s.push(i);
+  return s.length?s.join('+'):'none';
+}
+function renderKeypadLog(h){
+  const el=document.getElementById('kpLog');
+  if(!el||!h) return;
+  const last=h.last_key>=0?('slot '+h.last_key):'none';
+  const ghost=h.last_ghost_bits
+    ?(' · last ghost '+bitsHex(h.last_ghost_bits)+' ('+bitsSlots(h.last_ghost_bits)+' ignored)')
+    :'';
+  el.textContent='Held '+bitsHex(h.last_scan_bits)+' ('+bitsSlots(h.last_scan_bits)+
+    ') · last down '+bitsHex(h.last_down_bits)+' · fired '+last+ghost;
+}
 function setPairCard(d){
   const el=document.getElementById('pairCard');
   const pairing=!!d.pairing;
@@ -375,6 +393,7 @@ async function loadHotkeys(){
       const scan=!!(d.keypad&&d.keypad.enabled)||!!d.keypad_scanning;
       kp.textContent=scan?'Scan on — press a key to fire that slot.':'Scan off — save eight valid pins to start.';
     }
+    renderKeypadLog(d);
     const err=d.last_error?(' · '+d.last_error):'';
     fireStatus.textContent=d.last_fire_ms
       ?('Last fire slot '+d.last_id+' · HTTP '+d.last_http_status+err+' · '+d.last_fire_ms+' ms')
@@ -529,9 +548,12 @@ async function refresh(){
       else showTab(s.wifi&&s.wifi.setup_mode?'settings':'hotkeys');
       defaulted=true;
     }
-    if(s.hotkeys&&s.hotkeys.last_fire_ms){
-      const err=s.hotkeys.last_error?(' · '+s.hotkeys.last_error):'';
-      fireStatus.textContent='Last fire slot '+s.hotkeys.last_id+' · HTTP '+s.hotkeys.last_http_status+err+' · '+s.hotkeys.last_fire_ms+' ms';
+    if(s.hotkeys){
+      renderKeypadLog(s.hotkeys);
+      if(s.hotkeys.last_fire_ms){
+        const err=s.hotkeys.last_error?(' · '+s.hotkeys.last_error):'';
+        fireStatus.textContent='Last fire slot '+s.hotkeys.last_id+' · HTTP '+s.hotkeys.last_http_status+err+' · '+s.hotkeys.last_fire_ms+' ms';
+      }
     }
   }catch(e){}
 }
@@ -646,6 +668,12 @@ pulsePresence();
 setInterval(pulsePresence,3000);
 setInterval(refresh,15000);
 setInterval(loadDoorbell,10000);
+setInterval(async()=>{
+  try{
+    const s=await j('/api/v1/status');
+    if(s.hotkeys) renderKeypadLog(s.hotkeys);
+  }catch{}
+},1000);
 </script>
 </body>
 </html>

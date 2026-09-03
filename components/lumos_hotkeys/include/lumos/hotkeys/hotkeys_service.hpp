@@ -60,6 +60,9 @@ private:
     std::array<int, 4> active_cols_{0, 0, 0, 0};
     std::uint16_t scan_raw_{0};
     std::uint16_t scan_stable_{0};
+    int scan_same_{0};
+    std::uint16_t last_down_bits_{0};
+    std::uint16_t last_ghost_bits_{0};
     int pending_id_{-1};
     int last_id_{-1};
     int last_key_{-1};

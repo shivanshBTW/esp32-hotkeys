@@ -218,6 +218,9 @@ static esp_err_t get_status(httpd_req_t* req) {
         cJSON_AddNumberToObject(hotkeys, "action_count", h.action_count);
         cJSON_AddNumberToObject(hotkeys, "last_id", h.last_id);
         cJSON_AddNumberToObject(hotkeys, "last_key", h.last_key);
+        cJSON_AddNumberToObject(hotkeys, "last_scan_bits", h.last_scan_bits);
+        cJSON_AddNumberToObject(hotkeys, "last_down_bits", h.last_down_bits);
+        cJSON_AddNumberToObject(hotkeys, "last_ghost_bits", h.last_ghost_bits);
         cJSON_AddNumberToObject(hotkeys, "last_http_status", h.last_http_status);
         cJSON_AddStringToObject(hotkeys, "last_error", h.last_error.c_str());
         cJSON_AddNumberToObject(hotkeys, "last_fire_ms", h.last_fire_ms);
