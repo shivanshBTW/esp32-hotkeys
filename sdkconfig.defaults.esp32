@@ -1,2 +1,4 @@
 # Classic ESP32 (WROOM-32, etc.)
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Drop TX power if VDD dips when the radio starts (USB-powered DevKits).
+CONFIG_ESP_PHY_REDUCE_TX_POWER=y

@@ -52,6 +52,23 @@ void mdns_worker(void* arg) {
     vTaskDelete(nullptr);
 }
 
+Result<void> wifi_err(esp_err_t err, const char* what) {
+    if (err == ESP_OK) {
+        return Result<void>::ok();
+    }
+    log.error("%s failed: %s", what, esp_err_to_name(err));
+    return Result<void>::fail(ErrorCode::NetworkError, what);
+}
+
+// esp_wifi_start() returns ESP_ERR_WIFI_CONN if the radio is already up.
+esp_err_t wifi_start_soft() {
+    const esp_err_t err = esp_wifi_start();
+    if (err == ESP_ERR_WIFI_CONN) {
+        return ESP_OK;
+    }
+    return err;
+}
+
 void schedule_mdns(WifiService* self) {
     static std::atomic<bool> started{false};
     bool expected = false;
@@ -225,11 +242,23 @@ Result<void> WifiService::start() {
     instance_ = this;
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, this));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, this));
+    if (auto r = wifi_err(esp_wifi_init(&cfg), "esp_wifi_init"); !r) {
+        return r;
+    }
+    if (auto r = wifi_err(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, this),
+                          "wifi event register");
+        !r) {
+        return r;
+    }
+    if (auto r = wifi_err(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, this),
+                          "ip event register");
+        !r) {
+        return r;
+    }
 
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    if (auto r = wifi_err(esp_wifi_set_storage(WIFI_STORAGE_RAM), "wifi set storage"); !r) {
+        return r;
+    }
     started_ = true;
 
     if (has_saved_ssid()) {
@@ -238,12 +267,15 @@ Result<void> WifiService::start() {
             return result;
         }
         log.warn("STA connect setup failed — starting AP");
+        (void)esp_wifi_stop();
     }
     return start_ap();
 }
 
 Result<void> WifiService::start_sta_from_prefs() {
-    return connect_sta(preferences_.device().wifi_ssid, preferences_.device().wifi_password);
+    // Do not rewrite NVS on every boot — connect_sta() persists credentials.
+    sta_fails_ = 0;
+    return apply_sta_config_and_connect(false);
 }
 
 Result<void> WifiService::apply_sta_ip_config() {
@@ -326,7 +358,9 @@ Result<void> WifiService::apply_sta_config_and_connect(bool keep_ap) {
 
     apply_hostname();
     if (keep_ap || setup_ap_active_) {
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
+        if (auto r = wifi_err(esp_wifi_set_mode(WIFI_MODE_APSTA), "wifi set APSTA"); !r) {
+            return r;
+        }
         retry_in_flight_ = true;
         want_sta_connect_ = false;
     } else {
@@ -335,11 +369,15 @@ Result<void> WifiService::apply_sta_config_and_connect(bool keep_ap) {
             g_captive_dns.reset();
             captive_dns_running_ = false;
         }
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        if (auto r = wifi_err(esp_wifi_set_mode(WIFI_MODE_STA), "wifi set STA"); !r) {
+            return r;
+        }
         want_sta_connect_ = true;
         retry_in_flight_ = false;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    if (auto r = wifi_err(esp_wifi_set_config(WIFI_IF_STA, &wifi_config), "wifi set STA config"); !r) {
+        return r;
+    }
 
     auto ip_result = apply_sta_ip_config();
     if (!ip_result) {
@@ -348,7 +386,10 @@ Result<void> WifiService::apply_sta_config_and_connect(bool keep_ap) {
         return ip_result;
     }
 
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (auto r = wifi_err(wifi_start_soft(), "wifi start"); !r) {
+        retry_in_flight_ = false;
+        return r;
+    }
     esp_wifi_set_ps(WIFI_PS_NONE);
     esp_wifi_connect();
 
@@ -439,9 +480,15 @@ Result<void> WifiService::start_ap(const std::string& ssid) {
     wifi_config.ap.max_connection = 4;
     wifi_config.ap.authmode = WIFI_AUTH_OPEN;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (auto r = wifi_err(esp_wifi_set_mode(WIFI_MODE_APSTA), "wifi set APSTA"); !r) {
+        return r;
+    }
+    if (auto r = wifi_err(esp_wifi_set_config(WIFI_IF_AP, &wifi_config), "wifi set AP config"); !r) {
+        return r;
+    }
+    if (auto r = wifi_err(wifi_start_soft(), "wifi start"); !r) {
+        return r;
+    }
     esp_wifi_set_ps(WIFI_PS_NONE);
 
     esp_netif_ip_info_t ip_info{};

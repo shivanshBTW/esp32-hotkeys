@@ -2,6 +2,9 @@
 
 #include <esp_log.h>
 
+#include <cstdio>
+#include <cstring>
+
 namespace lumos {
 
 Logger::Logger(const char* tag) : tag_(tag) {}
@@ -25,7 +28,19 @@ void Logger::log(LogLevel level, const char* fmt, va_list args) const {
         esp_level = ESP_LOG_VERBOSE;
         break;
     }
-    esp_log_writev(esp_level, tag_, fmt, args);
+    // esp_log_writev does not add a newline (ESP_LOG* macros do).
+    if (fmt != nullptr && fmt[0] != '\0' && fmt[std::strlen(fmt) - 1] == '\n') {
+        esp_log_writev(esp_level, tag_, fmt, args);
+        return;
+    }
+    char fmt_nl[256];
+    if (std::snprintf(fmt_nl, sizeof(fmt_nl), "%s\n", fmt ? fmt : "") >=
+        static_cast<int>(sizeof(fmt_nl))) {
+        esp_log_writev(esp_level, tag_, fmt, args);
+        esp_log_write(esp_level, tag_, "\n");
+        return;
+    }
+    esp_log_writev(esp_level, tag_, fmt_nl, args);
 }
 
 void Logger::error(const char* fmt, ...) const {

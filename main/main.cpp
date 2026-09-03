@@ -675,12 +675,16 @@ extern "C" void app_main() {
     auto& device = preferences->device();
     (void)device; // unused for now
 
+    auto doorbell = std::unique_ptr<lumos::DoorbellReceiver>(new lumos::DoorbellReceiver(*preferences));
+    // Drive the relay idle before Wi-Fi RF comes up. A floating active-low module
+    // can sit ON during PHY init and brown out / reset the chip.
+    doorbell->apply_settings();
+
     auto wifi = std::unique_ptr<lumos::WifiService>(new lumos::WifiService(*preferences));
     if (!wifi->start()) {
         log.warn("WiFi start failed (device may still be usable in AP setup)");
     }
 
-    auto doorbell = std::unique_ptr<lumos::DoorbellReceiver>(new lumos::DoorbellReceiver(*preferences));
     if (!doorbell->start()) {
         log.warn("Doorbell receiver failed to start (hotkeys firmware continues)");
     }
