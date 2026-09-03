@@ -34,11 +34,11 @@ PORT=/dev/cu.usbserial-0001 ./scripts/hotkeys_idf.sh doorbell-tx flash
 
 ## First boot (receiver)
 
-1. AP `Hotkeys-Setup` if no Wi-Fi is stored (open, typically `http://192.168.4.1/`).
-2. Configure STA via `POST /api/v1/wifi` or restore `GET/POST /api/v1/config` (`schema`: `hotkeys.config.v1`).
-3. mDNS: `_hotkeys._tcp`, hostname default `Hotkeys`.
-4. Doorbell UI: `/doorbell`. Pair with a TX the same way as LumosOS `/doorbell` (Start pairing on RX, Find nearby on `LumosOS-Bell`).
-5. HTTP OTA: `POST /api/v1/ota`.
+1. AP `Hotkeys-Setup` if no Wi-Fi is stored (open, typically `http://192.168.4.1/`). Captive-portal probes are the same as LumosOS.
+2. Home page `/` has Wi-Fi scan/connect (including static IP), hostname, config backup/restore, OTA upload, and doorbell pairing status — same flow as LumosOS, without LED/plugin controls.
+3. Doorbell page `/doorbell` is the LumosOS receiver UI (pair, relay GPIO, test pulse).
+4. mDNS: `_hotkeys._tcp`, hostname default `Hotkeys`.
+5. Config schema: `hotkeys.config.v1` (`GET/POST /api/v1/config`).
 
 TX first-boot AP remains `LumosOS-Bell` (pairing is by MAC, not hostname).
 

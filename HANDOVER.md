@@ -8,7 +8,8 @@ A later chat owns keypad scanning and actions. Doorbell TX/RX must stay wire-com
 
 | Path | What |
 | --- | --- |
-| `main/main.cpp` | Hotkeys receiver: HTTP + REST + doorbell RX wiring |
+| `main/main.cpp` | Hotkeys receiver: REST + doorbell RX wiring |
+| `components/hotkeys_webui` | Home + `/doorbell` pages (LumosOS UI minus LED/plugin/calibration) |
 | `main/hotkeys_service.hpp` | **Stub** — implement keypad here (or split a `components/hotkeys_*` later) |
 | `components/lumos_doorbell` | ESP-NOW TX + RX + packet/MAC (`lumos::` names kept on purpose) |
 | `components/lumos_wifi` | STA/AP, reconnect, static IP, captive DNS, hostname, mDNS `_hotkeys._tcp` |
@@ -49,7 +50,7 @@ mDNS service is `_hotkeys._tcp` with TXT `product=hotkeys`. Do not advertise `_l
 2. Persist mapping in preferences (`plugin_params("hotkeys")` is an opaque string map already, or add a dedicated struct).
 3. Expose `GET /api/v1/status` → `hotkeys.enabled` / bindings.
 4. Extend `hotkeys.config.v1` blob (do not break wifi/doorbell keys).
-5. Home UI `/` currently says “coming soon”; add the keypad page there.
+5. Home UI `/` already has Wi-Fi / OTA / config / doorbell. Add keypad controls in the **Hotkeys** section (do not replace the rest of the page).
 
 ## Do not
 

@@ -16,5 +16,6 @@ idf_component_register(
         lumos_wifi
         lumos_doorbell
         lumos_ota
+        hotkeys_webui
 )
 
