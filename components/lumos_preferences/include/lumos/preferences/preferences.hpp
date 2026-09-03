@@ -115,6 +115,9 @@ public:
     std::string get_plugin_param(const std::string& plugin_id, const std::string& key,
                                  const std::string& default_value = {}) const;
 
+    const std::string& hotkeys_blob() const { return hotkeys_blob_; }
+    void set_hotkeys_blob(std::string blob) { hotkeys_blob_ = std::move(blob); }
+
     static const char* startup_mode_to_plugin_id(StartupPluginMode mode,
                                                  const std::string& last_used) {
         return lumos::startup_mode_to_plugin_id(mode, last_used);
@@ -131,6 +134,7 @@ private:
     DeviceSettings device_{};
     mutable std::unordered_map<std::string, std::unordered_map<std::string, std::string>>
         plugin_params_;
+    std::string hotkeys_blob_;
     bool initialized_{false};
 };
 

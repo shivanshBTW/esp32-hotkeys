@@ -215,6 +215,14 @@ Result<void> Preferences::load() {
     device_.doorbell.paired_tx_mac =
         nvs_get_str_key(handle, "db_mac", device_.doorbell.paired_tx_mac);
 
+    size_t hk_len = 0;
+    if (nvs_get_blob(handle, "hk_blob", nullptr, &hk_len) == ESP_OK && hk_len > 0) {
+        hotkeys_blob_.assign(hk_len, '\0');
+        if (nvs_get_blob(handle, "hk_blob", hotkeys_blob_.data(), &hk_len) != ESP_OK) {
+            hotkeys_blob_.clear();
+        }
+    }
+
     size_t ign_len = 0;
     if (nvs_get_blob(handle, "ign_leds", nullptr, &ign_len) == ESP_OK && ign_len >= sizeof(std::uint16_t) &&
         (ign_len % sizeof(std::uint16_t)) == 0) {
@@ -282,6 +290,11 @@ Result<void> Preferences::save() {
     nvs_set_u16(handle, "db_ms", device_.doorbell.press_ms);
     nvs_set_u8(handle, "db_tone", device_.doorbell.tone ? 1 : 0);
     nvs_set_str_key(handle, "db_mac", device_.doorbell.paired_tx_mac);
+    if (hotkeys_blob_.empty()) {
+        nvs_erase_key(handle, "hk_blob");
+    } else {
+        nvs_set_blob(handle, "hk_blob", hotkeys_blob_.data(), hotkeys_blob_.size());
+    }
     if (device_.ignored_leds.empty()) {
         nvs_erase_key(handle, "ign_leds");
     } else {

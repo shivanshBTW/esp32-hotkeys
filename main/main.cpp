@@ -1,8 +1,8 @@
-#include "hotkeys_service.hpp"
 #include "lumos/core/logger.hpp"
 #include "lumos/core/result.hpp"
 #include "lumos/doorbell/doorbell_mac.hpp"
 #include "lumos/doorbell/doorbell_receiver.hpp"
+#include "lumos/hotkeys/hotkeys_service.hpp"
 #include "lumos/ota/ota_service.hpp"
 #include "lumos/preferences/preferences.hpp"
 #include "lumos/webui/web_ui.hpp"
@@ -36,6 +36,7 @@ struct State {
     lumos::Preferences* preferences{nullptr};
     lumos::WifiService* wifi{nullptr};
     lumos::DoorbellReceiver* doorbell{nullptr};
+    lumos::HotkeysService* hotkeys{nullptr};
 };
 
 State* g_state = nullptr;
@@ -209,8 +210,16 @@ static esp_err_t get_status(httpd_req_t* req) {
     cJSON_AddNumberToObject(doorbell, "relay_pin", d.relay_pin);
     cJSON_AddNumberToObject(doorbell, "last_ring_ms", d.last_ring_ms);
 
-    cJSON* hotkeys = cJSON_AddObjectToObject(root, "hotkeys");
-    cJSON_AddBoolToObject(hotkeys, "enabled", false);
+    if (st->hotkeys) {
+        const auto h = st->hotkeys->status();
+        cJSON* hotkeys = cJSON_AddObjectToObject(root, "hotkeys");
+        cJSON_AddBoolToObject(hotkeys, "enabled", h.enabled);
+        cJSON_AddNumberToObject(hotkeys, "action_count", h.action_count);
+        cJSON_AddNumberToObject(hotkeys, "last_id", h.last_id);
+        cJSON_AddNumberToObject(hotkeys, "last_http_status", h.last_http_status);
+        cJSON_AddStringToObject(hotkeys, "last_error", h.last_error.c_str());
+        cJSON_AddNumberToObject(hotkeys, "last_fire_ms", h.last_fire_ms);
+    }
     return send_printed(req, root);
 }
 
@@ -589,8 +598,12 @@ static esp_err_t get_config(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "api", kApiVersion);
     cJSON_AddItemToObject(root, "device",
                           device_settings_json(st->preferences->device(), include_secrets));
-    cJSON* hotkeys = cJSON_AddObjectToObject(root, "hotkeys");
-    cJSON_AddBoolToObject(hotkeys, "enabled", false);
+    if (st->hotkeys) {
+        cJSON_AddItemToObject(root, "hotkeys", st->hotkeys->to_json(include_secrets));
+    } else {
+        cJSON* hotkeys = cJSON_AddObjectToObject(root, "hotkeys");
+        cJSON_AddBoolToObject(hotkeys, "enabled", false);
+    }
 
     char* printed = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -651,6 +664,10 @@ static esp_err_t post_config(httpd_req_t* req) {
     }
     const bool doorbell_touched = cJSON_IsObject(cJSON_GetObjectItem(device_obj, "doorbell"));
     set_doorbell_fields(d.doorbell, json_get(device_obj, "doorbell"));
+    const cJSON* hotkeys_obj = cJSON_GetObjectItem(json, "hotkeys");
+    if (st->hotkeys && cJSON_IsObject(hotkeys_obj)) {
+        (void)st->hotkeys->apply_json(hotkeys_obj);
+    }
 
     st->preferences->save();
     if (doorbell_touched) {
@@ -662,6 +679,61 @@ static esp_err_t post_config(httpd_req_t* req) {
     }
     cJSON_Delete(json);
     return send_json(req, "{\"ok\":true,\"reboot\":false}");
+}
+
+static esp_err_t get_hotkeys(httpd_req_t* req) {
+    auto* st = from_req(req);
+    if (!st || !st->hotkeys) {
+        return send_json(req, "{\"error\":\"not ready\"}", 500);
+    }
+    return send_printed(req, st->hotkeys->to_json(false));
+}
+
+static esp_err_t post_hotkeys(httpd_req_t* req) {
+    auto* st = from_req(req);
+    if (!st || !st->hotkeys) {
+        return send_json(req, "{\"error\":\"not ready\"}", 500);
+    }
+    std::string body;
+    if (read_body(req, body) != ESP_OK) {
+        return send_json(req, "{\"error\":\"bad body\"}", 400);
+    }
+    cJSON* json = cJSON_Parse(body.c_str());
+    if (json == nullptr) {
+        return send_json(req, "{\"error\":\"invalid json\"}", 400);
+    }
+    auto result = st->hotkeys->apply_json(json);
+    cJSON_Delete(json);
+    if (!result) {
+        return send_json(req, "{\"error\":\"save failed\"}", 400);
+    }
+    return send_json(req, "{\"ok\":true}");
+}
+
+static esp_err_t post_hotkeys_test(httpd_req_t* req) {
+    auto* st = from_req(req);
+    if (!st || !st->hotkeys) {
+        return send_json(req, "{\"error\":\"not ready\"}", 500);
+    }
+    std::string body;
+    if (read_body(req, body) != ESP_OK) {
+        return send_json(req, "{\"error\":\"bad body\"}", 400);
+    }
+    int id = 0;
+    if (!body.empty()) {
+        cJSON* json = cJSON_Parse(body.c_str());
+        if (json == nullptr) {
+            return send_json(req, "{\"error\":\"invalid json\"}", 400);
+        }
+        id = json_get_int(json, "id", 0);
+        cJSON_Delete(json);
+    }
+    if (id < 0 || id >= lumos::kHotkeySlotCount) {
+        return send_json(req, "{\"error\":\"invalid slot\"}", 400);
+    }
+    const esp_err_t sent = send_json(req, "{\"ok\":true}");
+    st->hotkeys->test_fire(id);
+    return sent;
 }
 
 } // namespace
@@ -689,8 +761,11 @@ extern "C" void app_main() {
         log.warn("Doorbell receiver failed to start (hotkeys firmware continues)");
     }
 
-    hotkeys::HotkeysService hotkeys_stub;
-    hotkeys_stub.start();
+    auto hotkeys = std::unique_ptr<lumos::HotkeysService>(
+        new lumos::HotkeysService(*preferences, *wifi));
+    if (!hotkeys->start()) {
+        log.warn("Hotkeys service failed to start");
+    }
 
     httpd_handle_t server = start_http_server();
     if (server == nullptr) {
@@ -701,6 +776,7 @@ extern "C" void app_main() {
     s_state.preferences = preferences.get();
     s_state.wifi = wifi.get();
     s_state.doorbell = doorbell.get();
+    s_state.hotkeys = hotkeys.get();
     g_state = &s_state;
 
     auto ota = std::unique_ptr<lumos::OtaService>(new lumos::OtaService());
@@ -797,6 +873,24 @@ extern "C" void app_main() {
            .user_ctx = nullptr};
     (void)httpd_register_uri_handler(server, &uri);
 
+    uri = {.uri = "/api/v1/hotkeys",
+           .method = HTTP_GET,
+           .handler = [](httpd_req_t* r) -> esp_err_t { return get_hotkeys(r); },
+           .user_ctx = nullptr};
+    (void)httpd_register_uri_handler(server, &uri);
+
+    uri = {.uri = "/api/v1/hotkeys",
+           .method = HTTP_POST,
+           .handler = [](httpd_req_t* r) -> esp_err_t { return post_hotkeys(r); },
+           .user_ctx = nullptr};
+    (void)httpd_register_uri_handler(server, &uri);
+
+    uri = {.uri = "/api/v1/hotkeys/test",
+           .method = HTTP_POST,
+           .handler = [](httpd_req_t* r) -> esp_err_t { return post_hotkeys_test(r); },
+           .user_ctx = nullptr};
+    (void)httpd_register_uri_handler(server, &uri);
+
     uri = {.uri = "/api/v1/config",
            .method = HTTP_GET,
            .handler = [](httpd_req_t* r) -> esp_err_t { return get_config(r); },
@@ -813,6 +907,7 @@ extern "C" void app_main() {
     static auto s_preferences = std::move(preferences);
     static auto s_wifi = std::move(wifi);
     static auto s_doorbell = std::move(doorbell);
+    static auto s_hotkeys = std::move(hotkeys);
     static auto s_ota = std::move(ota);
     static auto s_webui = std::move(webui);
 
