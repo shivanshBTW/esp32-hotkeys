@@ -1,0 +1,5 @@
+# ESP32-S3 — many DevKits ship with 8MB flash; partition table still fits 4MB+.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# Prefer USB-Serial/JTAG console on S3 DevKits (UART0 still works if you use a USB-UART bridge).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
