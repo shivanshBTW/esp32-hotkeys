@@ -166,14 +166,16 @@ void DoorbellReceiver::run_test_buzz() {
     (void)gpio_set_drive_capability(gpio, GPIO_DRIVE_CAP_2);
     configured_pin_ = db.relay_pin;
 
-    // 3-pin active modules (GND/VCC/SIG) want a steady level, not PWM.
-    // Try LOW first (common "low-level trigger"), then HIGH.
-    log.info("test buzz SIG LOW 800ms");
-    gpio_set_level(gpio, 0);
-    vTaskDelay(pdMS_TO_TICKS(800));
-    log.info("test buzz SIG HIGH 800ms");
-    gpio_set_level(gpio, 1);
-    vTaskDelay(pdMS_TO_TICKS(800));
+    // 3-pin module: VCC feeds the board, SIG needs a 2.5 kHz square wave.
+    // A single DC edge only clicks (what we heard on the last test).
+    log.info("test buzz PWM 2.5 kHz for 1000 ms on pin %d", db.relay_pin);
+    const int64_t end_us = esp_timer_get_time() + 1000 * 1000;
+    while (esp_timer_get_time() < end_us) {
+        gpio_set_level(gpio, 0);
+        esp_rom_delay_us(200);
+        gpio_set_level(gpio, 1);
+        esp_rom_delay_us(200);
+    }
     gpio_set_level(gpio, db.active_high ? 0 : 1);
     last_ring_ms_ = static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL);
     relay_active_ = false;
