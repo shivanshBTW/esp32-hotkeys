@@ -72,6 +72,10 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 </section>
 <section>
 <h2>Edit slot <span id="editId">0</span></h2>
+<label>Paste curl or JSON</label>
+<textarea id="hkImport" placeholder="curl -X POST http://192.168.0.20:8123/api/services/switch/toggle -H 'Authorization: Bearer …' -d '{&quot;entity_id&quot;:&quot;switch.lamp&quot;}'"></textarea>
+<button class="secondary" type="button" onclick="importPaste()">Fill from paste</button>
+<p class="hint">One curl, or a slot JSON object. Review the fields, then Save slot. Home Assistant curls also fill the token box below.</p>
 <label>Name</label><input id="hkName" maxlength="32" placeholder="Living lights"/>
 <label>Type</label>
 <select id="hkType" onchange="toggleType()">
@@ -340,10 +344,8 @@ function toggleType(){
   haFields.classList.toggle('hide', !ha);
   httpFields.classList.toggle('hide', ha);
 }
-function selectSlot(i){
-  selected=i;
-  const a=actions[i]||{};
-  editId.textContent=String(i);
+function applyActionToForm(a){
+  a=a||{};
   hkName.value=a.name||'';
   hkType.value=a.type==='ha'?'ha':'http';
   hkMethod.value=a.method||'POST';
@@ -356,7 +358,209 @@ function selectSlot(i){
   hkH1n.value=(h[0]&&h[0].name)||''; hkH1v.value=(h[0]&&h[0].value)||'';
   hkH2n.value=(h[1]&&h[1].name)||''; hkH2v.value=(h[1]&&h[1].value)||'';
   toggleType();
+}
+function selectSlot(i){
+  selected=i;
+  editId.textContent=String(i);
+  applyActionToForm(actions[i]||{});
   renderPad();
+}
+function tokenizeCurl(s){
+  s=String(s||'').replace(/^\uFEFF/,'').replace(/\\\r?\n/g,' ').trim();
+  const out=[];
+  let i=0;
+  while(i<s.length){
+    while(i<s.length && /\s/.test(s[i])) i++;
+    if(i>=s.length) break;
+    const q=s[i];
+    if(q==='"' || q==="'"){
+      i++;
+      let t='';
+      while(i<s.length){
+        if(s[i]==='\\' && q==='"' && i+1<s.length){ t+=s[i+1]; i+=2; continue; }
+        if(s[i]===q){ i++; break; }
+        t+=s[i++];
+      }
+      out.push(t);
+      continue;
+    }
+    let t='';
+    while(i<s.length && !/\s/.test(s[i])) t+=s[i++];
+    out.push(t);
+  }
+  return out;
+}
+function splitHeader(line){
+  const s=String(line||'');
+  const c=s.indexOf(':');
+  if(c<0) return {name:s.trim(),value:''};
+  return {name:s.slice(0,c).trim(),value:s.slice(c+1).trim()};
+}
+function skipHeaderName(name){
+  const n=String(name||'').toLowerCase();
+  return n==='content-length'||n==='host'||n==='connection'||n==='accept-encoding'||n==='accept';
+}
+function parseCurl(text){
+  const tokens=tokenizeCurl(text);
+  const rawHeaders=[];
+  let method='', url='', body='', user='';
+  const skip=new Set(['-s','-S','-k','-L','-v','-I','-i','-f','-g','-sS','-sk','-sSk','-#','--compressed','--insecure','--location','--fail','--silent','--show-error']);
+  for(let i=0;i<tokens.length;i++){
+    const t=tokens[i];
+    const next=()=>tokens[++i]||'';
+    if(t==='curl'||t==='curl.exe'||t==='sudo') continue;
+    if(t.startsWith('-X') && t.length>2){ method=t.slice(2); continue; }
+    if(t==='-X'||t==='--request'){ method=next(); continue; }
+    if(t==='-H'||t==='--header'){ rawHeaders.push(next()); continue; }
+    if(t==='-d'||t==='--data'||t==='--data-raw'||t==='--data-binary'||t==='--data-ascii'||t==='--data-urlencode'){ body=next(); continue; }
+    if(t==='--json'){ body=next(); rawHeaders.push('Content-Type: application/json'); if(!method) method='POST'; continue; }
+    if(t==='--url'){ url=next(); continue; }
+    if(t==='-u'||t==='--user'){ user=next(); continue; }
+    if(t==='-G'||t==='--get'){ method='GET'; continue; }
+    if(skip.has(t)) continue;
+    if(t.startsWith('-')){
+      if(tokens[i+1] && !tokens[i+1].startsWith('-') && !/^https?:/i.test(tokens[i+1])) i++;
+      continue;
+    }
+    if(/^https?:\/\//i.test(t) || t.startsWith('/')) url=t;
+  }
+  if(!method) method=body?'POST':'GET';
+  method=method.toUpperCase();
+  const headers=[];
+  for(const line of rawHeaders){
+    const h=splitHeader(line);
+    if(!h.name || skipHeaderName(h.name)) continue;
+    headers.push(h);
+  }
+  if(user){
+    try{ headers.unshift({name:'Authorization',value:'Basic '+btoa(user)}); }
+    catch(e){ headers.unshift({name:'Authorization',value:'Basic '+user}); }
+  }
+  return {method,url,body,headers};
+}
+function parseHaUrl(url){
+  const m=String(url||'').match(/^(https?:\/\/[^/\s]+)\/api\/services\/([^/?#]+)\/([^/?#]+)/i);
+  if(!m) return null;
+  return {base:m[1], service:m[2]+'.'+m[3]};
+}
+function actionFromJson(obj){
+  if(!obj || typeof obj!=='object') return null;
+  if(Array.isArray(obj.actions) && obj.actions.length){
+    const hit=obj.actions.find(a=>a && Number(a.id)===selected) || obj.actions[0];
+    return actionFromJson(hit);
+  }
+  if(Array.isArray(obj) && obj.length) return actionFromJson(obj[0]);
+  if(!(obj.url||obj.method||obj.service||obj.entity_id||obj.type||obj.body||obj.headers)) return null;
+  return {
+    name:obj.name||'',
+    type:obj.type==='ha'?'ha':'http',
+    method:obj.method||'POST',
+    url:obj.url||'',
+    body:obj.body||'',
+    service:obj.service||'',
+    entity_id:obj.entity_id||'',
+    data:typeof obj.data==='string'?obj.data:(obj.data?JSON.stringify(obj.data):''),
+    headers:Array.isArray(obj.headers)?obj.headers:[]
+  };
+}
+function actionFromCurl(text){
+  const c=parseCurl(text);
+  if(!c.url) throw new Error('No URL found in curl');
+  const ha=parseHaUrl(c.url);
+  let auth='';
+  const headers=[];
+  for(const h of c.headers){
+    const n=h.name.toLowerCase();
+    if(n==='authorization'){
+      auth=h.value;
+      continue;
+    }
+    if(n==='content-type' && /json/i.test(h.value)) continue;
+    headers.push(h);
+  }
+  if(ha){
+    let entity='', data='';
+    if(c.body){
+      try{
+        const j=JSON.parse(c.body);
+        if(j && typeof j==='object' && !Array.isArray(j)){
+          if(j.entity_id!=null) entity=String(j.entity_id);
+          const extra=Object.assign({},j);
+          delete extra.entity_id;
+          if(Object.keys(extra).length) data=JSON.stringify(extra);
+        } else data=c.body;
+      }catch(e){ data=c.body; }
+    }
+    let token=auth;
+    if(/^bearer\s+/i.test(token)) token=token.replace(/^bearer\s+/i,'');
+    return {
+      name:'',
+      type:'ha',
+      method:'POST',
+      url:'',
+      body:'',
+      service:ha.service,
+      entity_id:entity,
+      data,
+      headers:[],
+      ha_base:ha.base,
+      ha_token:token
+    };
+  }
+  return {
+    name:'',
+    type:'http',
+    method:c.method,
+    url:c.url,
+    body:c.body,
+    service:'',
+    entity_id:'',
+    data:'',
+    headers:headers.slice(0,2)
+  };
+}
+function importWarnings(a){
+  const w=[];
+  if((a.name||'').length>32) w.push('name cut to 32');
+  if((a.url||'').length>192) w.push('URL cut to 192');
+  if((a.body||'').length>256) w.push('body cut to 256');
+  if((a.service||'').length>64) w.push('service cut to 64');
+  if((a.entity_id||'').length>64) w.push('entity cut to 64');
+  if((a.data||'').length>256) w.push('data cut to 256');
+  const hs=a.headers||[];
+  if(hs.length>2) w.push('only first 2 headers kept');
+  for(const h of hs.slice(0,2)){
+    if((h.value||'').length>96) w.push((h.name||'header')+' value cut to 96 — use HA helper for long tokens');
+  }
+  return w;
+}
+function importPaste(){
+  const raw=hkImport.value.trim();
+  if(!raw){ hkMsg.textContent='Paste a curl command or a slot JSON object first.'; return; }
+  let a=null;
+  try{
+    if(raw[0]==='{' || raw[0]==='[') a=actionFromJson(JSON.parse(raw));
+  }catch(e){ a=null; }
+  try{
+    if(!a) a=actionFromCurl(raw);
+  }catch(e){
+    hkMsg.textContent='Could not parse paste: '+e.message;
+    return;
+  }
+  if(!a){ hkMsg.textContent='Paste looked like JSON but was not a slot object.'; return; }
+  if(!a.name){
+    a.name=(a.entity_id||a.service||'').split('.').slice(-1)[0]||'';
+    if(a.name.length>32) a.name=a.name.slice(0,32);
+  }
+  applyActionToForm(a);
+  let extra='';
+  if(a.type==='ha'){
+    if(a.ha_base) haUrl.value=a.ha_base;
+    if(a.ha_token) haToken.value=a.ha_token;
+    extra=a.ha_token?' HA URL and token filled — click Save HA settings if the token is new.':'';
+  }
+  const w=importWarnings(a);
+  hkMsg.textContent='Filled slot '+selected+' from paste.'+extra+(w.length?(' Warnings: '+w.join('; ')+'.'):' Review, then Save slot.');
 }
 function slotPayload(){
   return {
