@@ -32,7 +32,7 @@ constexpr ledc_timer_t kToneTimer = LEDC_TIMER_0;
 constexpr ledc_channel_t kToneChannel = LEDC_CHANNEL_0;
 constexpr std::uint32_t kToneHz = 2500;
 constexpr ledc_timer_bit_t kToneRes = LEDC_TIMER_10_BIT;
-constexpr std::uint32_t kToneDutyOn = 512; // 50%
+constexpr std::uint32_t kToneDutyOn = 307; // ~30% — 50% overdrives cheap 3-pin modules
 
 bool add_peer(const std::uint8_t mac[6], std::uint8_t channel, wifi_interface_t ifidx) {
     esp_now_del_peer(mac);
@@ -150,34 +150,20 @@ void DoorbellReceiver::run_test_buzz() {
         log.warn("test buzz skipped — pin %d not a safe output", db.relay_pin);
         return;
     }
-    const gpio_num_t gpio = static_cast<gpio_num_t>(db.relay_pin);
-    log.info("test buzz start pin=%d (DC LOW then HIGH, 800ms each)", db.relay_pin);
-
-    gpio_config_t io{};
-    io.pin_bit_mask = 1ULL << db.relay_pin;
-    io.mode = GPIO_MODE_OUTPUT;
-    io.pull_up_en = GPIO_PULLUP_DISABLE;
-    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io.intr_type = GPIO_INTR_DISABLE;
-    if (gpio_config(&io) != ESP_OK) {
-        log.error("test buzz gpio %d config failed", db.relay_pin);
+    configured_pin_ = db.relay_pin;
+    ensure_tone(db.relay_pin);
+    if (!tone_ready_) {
+        log.error("test buzz LEDC failed on pin %d", db.relay_pin);
         return;
     }
-    (void)gpio_set_drive_capability(gpio, GPIO_DRIVE_CAP_2);
-    configured_pin_ = db.relay_pin;
-
-    // 3-pin module: VCC feeds the board, SIG needs a 2.5 kHz square wave.
-    // A single DC edge only clicks (what we heard on the last test).
-    log.info("test buzz PWM 2.5 kHz for 1000 ms on pin %d", db.relay_pin);
-    const int64_t end_us = esp_timer_get_time() + 1000 * 1000;
-    while (esp_timer_get_time() < end_us) {
-        gpio_set_level(gpio, 0);
-        esp_rom_delay_us(200);
-        gpio_set_level(gpio, 1);
-        esp_rom_delay_us(200);
-    }
-    gpio_set_level(gpio, db.active_high ? 0 : 1);
+    log.info("test buzz LEDC 2.5 kHz 1000 ms pin=%d", db.relay_pin);
+    start_tone();
     last_ring_ms_ = static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ledc_set_duty(kToneMode, kToneChannel, 64);
+    ledc_update_duty(kToneMode, kToneChannel);
+    vTaskDelay(pdMS_TO_TICKS(25));
+    stop_tone();
     relay_active_ = false;
     log.info("test buzz done last_ring_ms=%u", static_cast<unsigned>(last_ring_ms_));
 }
