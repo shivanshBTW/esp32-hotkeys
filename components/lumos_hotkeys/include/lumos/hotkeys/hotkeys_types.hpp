@@ -12,6 +12,7 @@ inline constexpr std::size_t kHotkeyUrlMax = 192;
 inline constexpr std::size_t kHotkeyBodyMax = 256;
 inline constexpr std::size_t kHotkeyHeaderMax = 96;
 inline constexpr std::size_t kHotkeyServiceMax = 64;
+inline constexpr std::size_t kHotkeyTokenMax = 768;
 inline constexpr int kHotkeyHeaderCount = 2;
 
 enum class HotkeyType : std::uint8_t {

@@ -56,6 +56,18 @@ std::string trim_slash(std::string s) {
     return s;
 }
 
+void trim_token(std::string& s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\n' || s.front() == '\r' || s.front() == '\t')) {
+        s.erase(s.begin());
+    }
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\n' || s.back() == '\r' || s.back() == '\t')) {
+        s.pop_back();
+    }
+    if (s.size() >= 7 && (s.compare(0, 7, "Bearer ") == 0 || s.compare(0, 7, "bearer ") == 0)) {
+        s.erase(0, 7);
+    }
+}
+
 const cJSON* jget(const cJSON* obj, const char* key) {
     if (obj == nullptr) {
         return nullptr;
@@ -140,7 +152,8 @@ cJSON* action_to_json(const HotkeyAction& a, int id) {
 
 void clamp_hotkeys_settings(HotkeysSettings& s) {
     clamp_str(s.ha_base_url, kHotkeyUrlMax);
-    clamp_str(s.ha_token, 256);
+    trim_token(s.ha_token);
+    clamp_str(s.ha_token, kHotkeyTokenMax);
     s.ha_base_url = trim_slash(s.ha_base_url);
     s.keypad_enabled = false;
     for (int& pin : s.row_pins) {
@@ -417,8 +430,10 @@ void HotkeysService::run_fire(int id) {
     const esp_err_t rc = esp_http_client_perform(client);
     if (rc == ESP_OK) {
         last_http_status_ = esp_http_client_get_status_code(client);
-        if (last_http_status_ >= 400) {
-            last_error_ = "http error";
+        if (last_http_status_ == 401) {
+            last_error_ = "HTTP 401 — HA rejected the token; paste it again";
+        } else if (last_http_status_ >= 400) {
+            last_error_ = "HTTP " + std::to_string(last_http_status_);
         }
     } else {
         last_error_ = esp_err_to_name(rc);
