@@ -1,7 +1,10 @@
 #include "lumos/hotkeys/hotkeys_service.hpp"
+#include "lumos/core/board_pins.hpp"
 #include "lumos/core/logger.hpp"
 
+#include "driver/gpio.h"
 #include "esp_http_client.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 
 #include "freertos/FreeRTOS.h"
@@ -66,6 +69,36 @@ void trim_token(std::string& s) {
     if (s.size() >= 7 && (s.compare(0, 7, "Bearer ") == 0 || s.compare(0, 7, "bearer ") == 0)) {
         s.erase(0, 7);
     }
+}
+
+bool keypad_pin_reserved(int pin) {
+    // Doorbell buzzer on this board. JTAG 13/14 hung the INT WDT.
+    return pin == 13 || pin == 14 || pin == 23;
+}
+
+bool keypad_pins_valid(const HotkeysSettings& s) {
+    bool used[40]{};
+    for (int pin : s.row_pins) {
+        if (!is_safe_output_gpio(pin) || keypad_pin_reserved(pin)) {
+            return false;
+        }
+        if (used[pin]) {
+            return false;
+        }
+        used[pin] = true;
+    }
+    for (int pin : s.col_pins) {
+        if (!is_safe_input_gpio(pin) || keypad_pin_reserved(pin)) {
+            return false;
+        }
+        if (pin < 40 && used[pin]) {
+            return false;
+        }
+        if (pin < 40) {
+            used[pin] = true;
+        }
+    }
+    return true;
 }
 
 const cJSON* jget(const cJSON* obj, const char* key) {
@@ -155,7 +188,6 @@ void clamp_hotkeys_settings(HotkeysSettings& s) {
     trim_token(s.ha_token);
     clamp_str(s.ha_token, kHotkeyTokenMax);
     s.ha_base_url = trim_slash(s.ha_base_url);
-    s.keypad_enabled = false;
     for (int& pin : s.row_pins) {
         if (pin < 0 || pin > 39) {
             pin = 0;
@@ -166,6 +198,7 @@ void clamp_hotkeys_settings(HotkeysSettings& s) {
             pin = 0;
         }
     }
+    s.keypad_enabled = keypad_pins_valid(s);
     for (auto& a : s.actions) {
         clamp_str(a.name, kHotkeyNameMax);
         clamp_str(a.url, kHotkeyUrlMax);
@@ -192,8 +225,17 @@ Result<void> HotkeysService::start() {
         return Result<void>::ok();
     }
     apply_settings();
+    configure_keypad();
+    if (!scan_task_started_) {
+        if (xTaskCreatePinnedToCore(&HotkeysService::scan_task, "hk_scan", 3072, this, 4, nullptr,
+                                    1) == pdPASS) {
+            scan_task_started_ = true;
+        } else {
+            log.error("keypad scan task create failed");
+        }
+    }
     started_ = true;
-    log.info("hotkeys ready slots=%d", action_count());
+    log.info("hotkeys ready slots=%d keypad=%d", action_count(), settings_.keypad_enabled ? 1 : 0);
     return Result<void>::ok();
 }
 
@@ -217,8 +259,10 @@ void HotkeysService::apply_settings() {
 HotkeysStatus HotkeysService::status() const {
     HotkeysStatus st;
     st.enabled = started_;
+    st.keypad_scanning = scan_ready_.load();
     st.action_count = action_count();
     st.last_id = last_id_;
+    st.last_key = last_key_;
     st.last_http_status = last_http_status_;
     st.last_error = last_error_;
     st.last_fire_ms = last_fire_ms_;
@@ -233,20 +277,22 @@ Result<void> HotkeysService::update(const HotkeysSettings& next, bool token_prov
     } else {
         settings_.ha_token = keep_token;
     }
-    settings_.keypad_enabled = false;
     settings_.row_pins = next.row_pins;
     settings_.col_pins = next.col_pins;
     settings_.actions = next.actions;
     clamp_hotkeys_settings(settings_);
     persist();
+    configure_keypad();
     return Result<void>::ok();
 }
 
 cJSON* HotkeysService::to_json(bool include_secrets) const {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddBoolToObject(root, "enabled", started_);
+    cJSON_AddBoolToObject(root, "keypad_scanning", scan_ready_.load());
     cJSON_AddNumberToObject(root, "action_count", action_count());
     cJSON_AddNumberToObject(root, "last_id", last_id_);
+    cJSON_AddNumberToObject(root, "last_key", last_key_);
     cJSON_AddNumberToObject(root, "last_http_status", last_http_status_);
     cJSON_AddStringToObject(root, "last_error", last_error_.c_str());
     cJSON_AddNumberToObject(root, "last_fire_ms", last_fire_ms_);
@@ -350,6 +396,7 @@ Result<void> HotkeysService::apply_json(const cJSON* obj) {
     }
     clamp_hotkeys_settings(settings_);
     persist();
+    configure_keypad();
     return Result<void>::ok();
 }
 
@@ -516,7 +563,7 @@ void HotkeysService::persist() {
     cJSON_AddStringToObject(ha, "base_url", settings_.ha_base_url.c_str());
     cJSON_AddStringToObject(ha, "token", settings_.ha_token.c_str());
     cJSON* kp = cJSON_AddObjectToObject(root, "keypad");
-    cJSON_AddBoolToObject(kp, "enabled", false);
+    cJSON_AddBoolToObject(kp, "enabled", settings_.keypad_enabled);
     cJSON* rows = cJSON_AddArrayToObject(kp, "row_pins");
     cJSON* cols = cJSON_AddArrayToObject(kp, "col_pins");
     for (int i = 0; i < 4; ++i) {
@@ -534,6 +581,125 @@ void HotkeysService::persist() {
         cJSON_free(printed);
     }
     preferences_.save();
+}
+
+void HotkeysService::release_keypad_pins() {
+    scan_ready_.store(false);
+    for (int pin : active_rows_) {
+        if (is_safe_output_gpio(pin)) {
+            gpio_set_direction(static_cast<gpio_num_t>(pin), GPIO_MODE_DISABLE);
+        }
+    }
+    for (int pin : active_cols_) {
+        if (is_safe_input_gpio(pin) && !keypad_pin_reserved(pin)) {
+            gpio_set_direction(static_cast<gpio_num_t>(pin), GPIO_MODE_DISABLE);
+        }
+    }
+    active_rows_ = {0, 0, 0, 0};
+    active_cols_ = {0, 0, 0, 0};
+    scan_raw_ = 0;
+    scan_stable_ = 0;
+}
+
+void HotkeysService::configure_keypad() {
+    if (!keypad_pins_valid(settings_)) {
+        if (scan_ready_.load()) {
+            release_keypad_pins();
+        }
+        settings_.keypad_enabled = false;
+        return;
+    }
+
+    const bool same = active_rows_ == settings_.row_pins && active_cols_ == settings_.col_pins &&
+                      scan_ready_.load();
+    if (same) {
+        settings_.keypad_enabled = true;
+        return;
+    }
+    release_keypad_pins();
+
+    std::uint64_t row_mask = 0;
+    std::uint64_t col_mask = 0;
+    for (int pin : settings_.row_pins) {
+        row_mask |= 1ULL << pin;
+    }
+    for (int pin : settings_.col_pins) {
+        col_mask |= 1ULL << pin;
+    }
+
+    gpio_config_t rows{};
+    rows.pin_bit_mask = row_mask;
+    rows.mode = GPIO_MODE_OUTPUT;
+    rows.pull_up_en = GPIO_PULLUP_DISABLE;
+    rows.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    rows.intr_type = GPIO_INTR_DISABLE;
+    if (gpio_config(&rows) != ESP_OK) {
+        log.error("keypad row gpio_config failed");
+        return;
+    }
+    gpio_config_t cols{};
+    cols.pin_bit_mask = col_mask;
+    cols.mode = GPIO_MODE_INPUT;
+    cols.pull_up_en = GPIO_PULLUP_ENABLE;
+    cols.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    cols.intr_type = GPIO_INTR_DISABLE;
+    if (gpio_config(&cols) != ESP_OK) {
+        log.error("keypad col gpio_config failed");
+        return;
+    }
+    for (int pin : settings_.row_pins) {
+        gpio_set_level(static_cast<gpio_num_t>(pin), 1);
+    }
+    active_rows_ = settings_.row_pins;
+    active_cols_ = settings_.col_pins;
+    settings_.keypad_enabled = true;
+    scan_ready_.store(true);
+    log.info("keypad scan rows=%d,%d,%d,%d cols=%d,%d,%d,%d", active_rows_[0], active_rows_[1],
+             active_rows_[2], active_rows_[3], active_cols_[0], active_cols_[1], active_cols_[2],
+             active_cols_[3]);
+}
+
+void HotkeysService::scan_once() {
+    if (!scan_ready_.load()) {
+        return;
+    }
+    std::uint16_t bits = 0;
+    for (int r = 0; r < 4; ++r) {
+        gpio_set_level(static_cast<gpio_num_t>(active_rows_[r]), 0);
+        esp_rom_delay_us(30);
+        for (int c = 0; c < 4; ++c) {
+            if (gpio_get_level(static_cast<gpio_num_t>(active_cols_[c])) == 0) {
+                bits = static_cast<std::uint16_t>(bits | (1u << (r * 4 + c)));
+            }
+        }
+        gpio_set_level(static_cast<gpio_num_t>(active_rows_[r]), 1);
+    }
+    if (bits != scan_raw_) {
+        scan_raw_ = bits;
+        return;
+    }
+    if (bits == scan_stable_) {
+        return;
+    }
+    const std::uint16_t down = static_cast<std::uint16_t>(bits & ~scan_stable_);
+    scan_stable_ = bits;
+    for (int i = 0; i < kHotkeySlotCount; ++i) {
+        if ((down & (1u << i)) == 0) {
+            continue;
+        }
+        last_key_ = i;
+        log.info("keypad press slot=%d", i);
+        test_fire(i);
+    }
+}
+
+void HotkeysService::scan_task(void* arg) {
+    auto* self = static_cast<HotkeysService*>(arg);
+    while (self != nullptr) {
+        self->scan_once();
+        vTaskDelay(pdMS_TO_TICKS(12));
+    }
+    vTaskDelete(nullptr);
 }
 
 int HotkeysService::action_count() const {

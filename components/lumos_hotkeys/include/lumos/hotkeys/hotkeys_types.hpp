@@ -48,8 +48,10 @@ struct HotkeysSettings {
 
 struct HotkeysStatus {
     bool enabled{false};
+    bool keypad_scanning{false};
     int action_count{0};
     int last_id{-1};
+    int last_key{-1};
     int last_http_status{0};
     std::string last_error;
     std::uint32_t last_fire_ms{0};

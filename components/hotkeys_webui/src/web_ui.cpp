@@ -114,20 +114,21 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 </section>
 <section>
 <h2>Keypad pins</h2>
-<p class="hint">Saved for later. Pins are not driven at boot. Suggested later: rows 16 17 18 19, cols 21 22 25 26. Leave 0 until you wire the pad. Avoid 13, 14, 23 (buzzer), and 34–39 for rows.</p>
-<label>Row GPIOs</label>
+<p class="hint">4×4 membrane: rows are outputs, cols are inputs with pull-ups. Suggested on this ESP32 (buzzer is 23): R1–R4 = 16 17 18 19, C1–C4 = 21 22 25 26. Avoid 13, 14, 23, and 34–39 for rows. Slot 0 is R1+C1 (top-left).</p>
+<p id="kpScan" class="hint">Scan off.</p>
+<label>Rows R1–R4</label>
 <div class="grid4">
-  <input id="row0" type="number" min="0" max="39" value="0"/>
-  <input id="row1" type="number" min="0" max="39" value="0"/>
-  <input id="row2" type="number" min="0" max="39" value="0"/>
-  <input id="row3" type="number" min="0" max="39" value="0"/>
+  <input id="row0" type="number" min="0" max="39" value="16" title="R1"/>
+  <input id="row1" type="number" min="0" max="39" value="17" title="R2"/>
+  <input id="row2" type="number" min="0" max="39" value="18" title="R3"/>
+  <input id="row3" type="number" min="0" max="39" value="19" title="R4"/>
 </div>
-<label>Col GPIOs</label>
+<label>Cols C1–C4</label>
 <div class="grid4">
-  <input id="col0" type="number" min="0" max="39" value="0"/>
-  <input id="col1" type="number" min="0" max="39" value="0"/>
-  <input id="col2" type="number" min="0" max="39" value="0"/>
-  <input id="col3" type="number" min="0" max="39" value="0"/>
+  <input id="col0" type="number" min="0" max="39" value="21" title="C1"/>
+  <input id="col1" type="number" min="0" max="39" value="22" title="C2"/>
+  <input id="col2" type="number" min="0" max="39" value="25" title="C3"/>
+  <input id="col3" type="number" min="0" max="39" value="26" title="C4"/>
 </div>
 <button type="button" onclick="saveKeypad()">Save pins</button>
 </section>
@@ -362,11 +363,17 @@ async function loadHotkeys(){
     actions=d.actions||[];
     haUrl.value=(d.ha&&d.ha.base_url)||'';
     haTokenHint.textContent=d.ha&&d.ha.token_set?'A token is saved on the device.':'No HA token saved.';
-    const rows=(d.keypad&&d.keypad.row_pins)||[0,0,0,0];
-    const cols=(d.keypad&&d.keypad.col_pins)||[0,0,0,0];
+    const rows=(d.keypad&&d.keypad.row_pins)||[16,17,18,19];
+    const cols=(d.keypad&&d.keypad.col_pins)||[21,22,25,26];
+    const sugR=[16,17,18,19], sugC=[21,22,25,26];
     for(let i=0;i<4;i++){
-      document.getElementById('row'+i).value=rows[i]||0;
-      document.getElementById('col'+i).value=cols[i]||0;
+      document.getElementById('row'+i).value=rows[i]||sugR[i];
+      document.getElementById('col'+i).value=cols[i]||sugC[i];
+    }
+    const kp=document.getElementById('kpScan');
+    if(kp){
+      const scan=!!(d.keypad&&d.keypad.enabled)||!!d.keypad_scanning;
+      kp.textContent=scan?'Scan on — press a key to fire that slot.':'Scan off — save eight valid pins to start.';
     }
     const err=d.last_error?(' · '+d.last_error):'';
     fireStatus.textContent=d.last_fire_ms
@@ -400,7 +407,8 @@ async function saveKeypad(){
     const row_pins=[0,1,2,3].map(i=>Number(document.getElementById('row'+i).value)||0);
     const col_pins=[0,1,2,3].map(i=>Number(document.getElementById('col'+i).value)||0);
     await j('/api/v1/hotkeys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keypad:{row_pins,col_pins}})});
-    hkMsg.textContent='Pins saved. Scan is still off.';
+    hkMsg.textContent='Pins saved.';
+    await loadHotkeys();
   }catch(e){ hkMsg.textContent='Save failed: '+e.message; }
 }
 async function testSlot(){

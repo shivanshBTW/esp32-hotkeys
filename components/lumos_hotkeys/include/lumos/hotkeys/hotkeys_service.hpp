@@ -44,14 +44,25 @@ private:
     bool merge_json(const cJSON* obj, HotkeysSettings& next, bool& token_provided) const;
     void persist();
     int action_count() const;
+    void configure_keypad();
+    void release_keypad_pins();
+    void scan_once();
+    static void scan_task(void* arg);
 
     Preferences& preferences_;
     WifiService& wifi_;
     HotkeysSettings settings_{};
     bool started_{false};
     std::atomic<bool> busy_{false};
+    std::atomic<bool> scan_ready_{false};
+    bool scan_task_started_{false};
+    std::array<int, 4> active_rows_{0, 0, 0, 0};
+    std::array<int, 4> active_cols_{0, 0, 0, 0};
+    std::uint16_t scan_raw_{0};
+    std::uint16_t scan_stable_{0};
     int pending_id_{-1};
     int last_id_{-1};
+    int last_key_{-1};
     int last_http_status_{0};
     std::string last_error_;
     std::uint32_t last_fire_ms_{0};

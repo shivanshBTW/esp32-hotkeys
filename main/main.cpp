@@ -214,8 +214,10 @@ static esp_err_t get_status(httpd_req_t* req) {
         const auto h = st->hotkeys->status();
         cJSON* hotkeys = cJSON_AddObjectToObject(root, "hotkeys");
         cJSON_AddBoolToObject(hotkeys, "enabled", h.enabled);
+        cJSON_AddBoolToObject(hotkeys, "keypad_scanning", h.keypad_scanning);
         cJSON_AddNumberToObject(hotkeys, "action_count", h.action_count);
         cJSON_AddNumberToObject(hotkeys, "last_id", h.last_id);
+        cJSON_AddNumberToObject(hotkeys, "last_key", h.last_key);
         cJSON_AddNumberToObject(hotkeys, "last_http_status", h.last_http_status);
         cJSON_AddStringToObject(hotkeys, "last_error", h.last_error.c_str());
         cJSON_AddNumberToObject(hotkeys, "last_fire_ms", h.last_fire_ms);
