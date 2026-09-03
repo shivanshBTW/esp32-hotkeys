@@ -4,3 +4,5 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESP_PHY_REDUCE_TX_POWER=y
 # Default 300 ms INT WDT is too tight for NVS + Wi-Fi bring-up on this board.
 CONFIG_ESP_INT_WDT_TIMEOUT_MS=1000
+# Wi-Fi + doorbell + hotkeys JSON on main overflows the IDF default (~3.5K).
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288

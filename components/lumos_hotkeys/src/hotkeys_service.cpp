@@ -209,11 +209,8 @@ void HotkeysService::apply_settings() {
         return;
     }
     bool token_provided = false;
-    HotkeysSettings next{};
-    if (merge_json(json, next, token_provided)) {
-        settings_ = next;
-        clamp_hotkeys_settings(settings_);
-    }
+    (void)merge_json(json, settings_, token_provided);
+    clamp_hotkeys_settings(settings_);
     cJSON_Delete(json);
 }
 
@@ -230,10 +227,16 @@ HotkeysStatus HotkeysService::status() const {
 
 Result<void> HotkeysService::update(const HotkeysSettings& next, bool token_provided) {
     const std::string keep_token = settings_.ha_token;
-    settings_ = next;
-    if (!token_provided) {
+    settings_.ha_base_url = next.ha_base_url;
+    if (token_provided) {
+        settings_.ha_token = next.ha_token;
+    } else {
         settings_.ha_token = keep_token;
     }
+    settings_.keypad_enabled = false;
+    settings_.row_pins = next.row_pins;
+    settings_.col_pins = next.col_pins;
+    settings_.actions = next.actions;
     clamp_hotkeys_settings(settings_);
     persist();
     return Result<void>::ok();
@@ -338,11 +341,16 @@ bool HotkeysService::merge_json(const cJSON* obj, HotkeysSettings& next, bool& t
 
 Result<void> HotkeysService::apply_json(const cJSON* obj) {
     bool token_provided = false;
-    HotkeysSettings next = settings_;
-    if (!merge_json(obj, next, token_provided)) {
+    const std::string keep_token = settings_.ha_token;
+    if (!merge_json(obj, settings_, token_provided)) {
         return Result<void>::fail(ErrorCode::InvalidArgument, "hotkeys object required");
     }
-    return update(next, token_provided);
+    if (!token_provided) {
+        settings_.ha_token = keep_token;
+    }
+    clamp_hotkeys_settings(settings_);
+    persist();
+    return Result<void>::ok();
 }
 
 void HotkeysService::test_fire(int id) {
