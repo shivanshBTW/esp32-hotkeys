@@ -362,7 +362,7 @@ a{color:var(--accent);font-weight:600;text-decoration:none}
 <label class="check"><input id="enabled" type="checkbox"/> Enable doorbell receiver</label>
 <label>Relay GPIO</label>
 <input id="relayPin" type="number" min="4" max="33" value="17"/>
-<p class="hint">Default 17 (safe on ESP32-WROOM). Avoid 0/2/5/6–12/15 and input-only 34–39.</p>
+<p class="hint">Default 17 (safe on ESP32-WROOM). Avoid 0/2/5/6–15 (flash/JTAG/strapping) and input-only 34–39. Use 16, 17, 18, 21–23, 25–27, 32, 33.</p>
 <label class="check"><input id="activeHigh" type="checkbox" checked/> Relay active-HIGH</label>
 <p class="hint">Uncheck for active-LOW / low-level trigger modules.</p>
 <label class="check"><input id="tone" type="checkbox"/> Buzzer tone (2.5 kHz PWM)</label>
@@ -374,6 +374,7 @@ a{color:var(--accent);font-weight:600;text-decoration:none}
 <p class="hint">Required if you skip pairing. Empty or invalid MAC = ignore all ESP-NOW doorbell packets.</p>
 <button type="button" onclick="saveDoorbell()">Save</button>
 <button class="secondary" type="button" onclick="testRelay()">Test relay pulse</button>
+<p class="hint">If this reboots the board, the GPIO is overloaded or shorted. GPIO is a signal only — power a relay/buzzer from 5 V through a module or transistor, not the pin itself.</p>
 <pre id="msg"></pre>
 </section>
 <section>

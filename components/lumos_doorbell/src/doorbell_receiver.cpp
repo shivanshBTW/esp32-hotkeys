@@ -8,8 +8,12 @@
 #include "driver/ledc.h"
 #include "esp_mac.h"
 #include "esp_now.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -24,8 +28,8 @@ constexpr std::uint16_t kMinPressMs = 100;
 constexpr std::uint16_t kMaxPressMs = 4000;
 constexpr std::uint64_t kHelloPeriodUs = 400 * 1000;
 constexpr ledc_mode_t kToneMode = LEDC_LOW_SPEED_MODE;
-constexpr ledc_timer_t kToneTimer = LEDC_TIMER_3;
-constexpr ledc_channel_t kToneChannel = LEDC_CHANNEL_7;
+constexpr ledc_timer_t kToneTimer = LEDC_TIMER_0;
+constexpr ledc_channel_t kToneChannel = LEDC_CHANNEL_0;
 constexpr std::uint32_t kToneHz = 2500;
 constexpr ledc_timer_bit_t kToneRes = LEDC_TIMER_10_BIT;
 constexpr std::uint32_t kToneDutyOn = 512; // 50%
@@ -112,16 +116,68 @@ void DoorbellReceiver::apply_settings() {
 
     if (relay_active_ && release_timer_ != nullptr) {
         esp_timer_stop(release_timer_);
-        set_relay(false);
+        relay_active_ = false;
     }
-    configure_gpio();
+    // Do not touch pads at boot/settings load. A shorted or JTAG pin
+    // (this board died on GPIO 13) trips the interrupt WDT and bootloops.
+    configured_pin_ = -1;
+    tone_ready_ = false;
 }
 
 void DoorbellReceiver::test_pulse() {
-    if (!preferences_.device().doorbell.enabled && !started_) {
-        // Allow test even when disabled so wiring can be verified.
+    const auto& db = preferences_.device().doorbell;
+    log.info("test pulse scheduled pin=%d tone=%d", db.relay_pin, db.tone ? 1 : 0);
+    // Run off the HTTP task so the TCP response can flush, and off Wi-Fi's core.
+    if (xTaskCreatePinnedToCore(&DoorbellReceiver::test_task, "db_buzz", 4096, this, 5, nullptr,
+                                1) != pdPASS) {
+        log.error("test task create failed — buzzing inline");
+        run_test_buzz();
     }
-    pulse_relay();
+}
+
+void DoorbellReceiver::test_task(void* arg) {
+    auto* self = static_cast<DoorbellReceiver*>(arg);
+    vTaskDelay(pdMS_TO_TICKS(150));
+    if (self != nullptr) {
+        self->run_test_buzz();
+    }
+    vTaskDelete(nullptr);
+}
+
+void DoorbellReceiver::run_test_buzz() {
+    auto& db = preferences_.device().doorbell;
+    if (!is_safe_output_gpio(db.relay_pin)) {
+        log.warn("test buzz skipped — pin %d not a safe output", db.relay_pin);
+        return;
+    }
+    const gpio_num_t gpio = static_cast<gpio_num_t>(db.relay_pin);
+    log.info("test buzz start pin=%d (DC LOW then HIGH, 800ms each)", db.relay_pin);
+
+    gpio_config_t io{};
+    io.pin_bit_mask = 1ULL << db.relay_pin;
+    io.mode = GPIO_MODE_OUTPUT;
+    io.pull_up_en = GPIO_PULLUP_DISABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io.intr_type = GPIO_INTR_DISABLE;
+    if (gpio_config(&io) != ESP_OK) {
+        log.error("test buzz gpio %d config failed", db.relay_pin);
+        return;
+    }
+    (void)gpio_set_drive_capability(gpio, GPIO_DRIVE_CAP_2);
+    configured_pin_ = db.relay_pin;
+
+    // 3-pin active modules (GND/VCC/SIG) want a steady level, not PWM.
+    // Try LOW first (common "low-level trigger"), then HIGH.
+    log.info("test buzz SIG LOW 800ms");
+    gpio_set_level(gpio, 0);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    log.info("test buzz SIG HIGH 800ms");
+    gpio_set_level(gpio, 1);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    gpio_set_level(gpio, db.active_high ? 0 : 1);
+    last_ring_ms_ = static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL);
+    relay_active_ = false;
+    log.info("test buzz done last_ring_ms=%u", static_cast<unsigned>(last_ring_ms_));
 }
 
 DoorbellStatus DoorbellReceiver::status() const {
@@ -305,7 +361,7 @@ void DoorbellReceiver::note_peer(const std::uint8_t mac[6], const DoorbellPairHe
     std::memcpy(p.name, hello.name, sizeof(p.name));
 }
 
-void DoorbellReceiver::pulse_relay() {
+void DoorbellReceiver::pulse_relay(std::uint16_t override_ms) {
     const auto& db = preferences_.device().doorbell;
     set_relay(true);
     last_ring_ms_ = static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL);
@@ -313,8 +369,10 @@ void DoorbellReceiver::pulse_relay() {
         return;
     }
     esp_timer_stop(release_timer_);
-    const std::uint64_t us =
-        static_cast<std::uint64_t>(std::max<std::uint16_t>(db.press_ms, kMinPressMs)) * 1000ULL;
+    const std::uint16_t ms =
+        override_ms > 0 ? override_ms
+                        : static_cast<std::uint16_t>(std::max<std::uint16_t>(db.press_ms, kMinPressMs));
+    const std::uint64_t us = static_cast<std::uint64_t>(ms) * 1000ULL;
     if (esp_timer_start_once(release_timer_, us) != ESP_OK) {
         log.error("failed to start relay release timer");
         set_relay(false);
@@ -323,6 +381,9 @@ void DoorbellReceiver::pulse_relay() {
 
 void DoorbellReceiver::set_relay(bool active) {
     const auto& db = preferences_.device().doorbell;
+    if (configured_pin_ != db.relay_pin) {
+        configure_gpio();
+    }
     const int pin = configured_pin_ >= 0 ? configured_pin_ : db.relay_pin;
     if (!is_safe_output_gpio(pin)) {
         return;
@@ -335,7 +396,9 @@ void DoorbellReceiver::set_relay(bool active) {
         }
     } else {
         const int level = db.active_high ? (active ? 1 : 0) : (active ? 0 : 1);
-        gpio_set_level(static_cast<gpio_num_t>(pin), level);
+        if (gpio_set_level(static_cast<gpio_num_t>(pin), level) != ESP_OK) {
+            log.error("relay gpio %d set_level(%d) failed", pin, level);
+        }
     }
     relay_active_ = active;
 }
@@ -396,15 +459,16 @@ void DoorbellReceiver::configure_gpio() {
         return;
     }
 
+    const gpio_num_t gpio = static_cast<gpio_num_t>(pin);
+
     if (configured_pin_ >= 0 && configured_pin_ != pin) {
         if (tone_ready_) {
             ledc_stop(kToneMode, kToneChannel, 0);
             tone_ready_ = false;
         }
-        gpio_reset_pin(static_cast<gpio_num_t>(configured_pin_));
+        gpio_set_direction(static_cast<gpio_num_t>(configured_pin_), GPIO_MODE_DISABLE);
     }
 
-    gpio_reset_pin(static_cast<gpio_num_t>(pin));
     configured_pin_ = pin;
 
     if (db.tone) {
@@ -417,7 +481,6 @@ void DoorbellReceiver::configure_gpio() {
     if (tone_ready_) {
         ledc_stop(kToneMode, kToneChannel, 0);
         tone_ready_ = false;
-        gpio_reset_pin(static_cast<gpio_num_t>(pin));
     }
 
     gpio_config_t io{};
@@ -426,8 +489,16 @@ void DoorbellReceiver::configure_gpio() {
     io.pull_up_en = GPIO_PULLUP_DISABLE;
     io.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&io);
-    set_relay(false);
+    if (gpio_config(&io) != ESP_OK) {
+        log.error("relay gpio %d config failed", pin);
+        return;
+    }
+    // Weaker drive: a GPIO shorted to GND or a raw coil will brown out USB power
+    // less violently than the default ~20–40 mA pad.
+    (void)gpio_set_drive_capability(gpio, GPIO_DRIVE_CAP_1);
+    const int idle = db.active_high ? 0 : 1;
+    (void)gpio_set_level(gpio, idle);
+    relay_active_ = false;
 }
 
 void DoorbellReceiver::send_pair(std::uint8_t type, const std::uint8_t* dest) {

@@ -61,6 +61,10 @@ inline bool is_safe_output_gpio(int pin) {
     if (pin == 0 || pin == 2 || pin == 5 || pin == 12 || pin == 15) {
         return false;
     }
+    // JTAG MTCK/MTDO — pad config on these can hang the interrupt WDT.
+    if (pin == 13 || pin == 14) {
+        return false;
+    }
     if (pin >= 34) {
         return false;
     }

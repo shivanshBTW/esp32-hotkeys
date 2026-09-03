@@ -445,8 +445,11 @@ static esp_err_t post_doorbell_test(httpd_req_t* req) {
     if (!st) {
         return send_json(req, "{\"error\":\"not ready\"}", 500);
     }
+    // Finish the HTTP response first. Driving the relay can brown out the
+    // chip; if we pulse first the browser just sees a dropped connection.
+    const esp_err_t sent = send_json(req, "{\"ok\":true}");
     st->doorbell->test_pulse();
-    return send_json(req, "{\"ok\":true}");
+    return sent;
 }
 
 static esp_err_t post_doorbell_pair(httpd_req_t* req) {
@@ -676,9 +679,6 @@ extern "C" void app_main() {
     (void)device; // unused for now
 
     auto doorbell = std::unique_ptr<lumos::DoorbellReceiver>(new lumos::DoorbellReceiver(*preferences));
-    // Drive the relay idle before Wi-Fi RF comes up. A floating active-low module
-    // can sit ON during PHY init and brown out / reset the chip.
-    doorbell->apply_settings();
 
     auto wifi = std::unique_ptr<lumos::WifiService>(new lumos::WifiService(*preferences));
     if (!wifi->start()) {

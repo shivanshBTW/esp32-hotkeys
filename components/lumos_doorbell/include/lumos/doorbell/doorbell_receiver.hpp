@@ -53,12 +53,14 @@ private:
     void on_packet(const std::uint8_t mac[6], const std::uint8_t* data, int len, int rssi);
     void handle_pair(const std::uint8_t src[6], const DoorbellPairHello& hello, int rssi);
     void note_peer(const std::uint8_t mac[6], const DoorbellPairHello& hello, int rssi);
-    void pulse_relay();
+    void pulse_relay(std::uint16_t override_ms = 0);
     void set_relay(bool active);
     void configure_gpio();
     void ensure_tone(int pin);
     void start_tone();
     void stop_tone();
+    void run_test_buzz();
+    static void test_task(void* arg);
     void send_pair(std::uint8_t type, const std::uint8_t* dest);
     void ensure_broadcast_peer();
     bool pairing_active() const;
