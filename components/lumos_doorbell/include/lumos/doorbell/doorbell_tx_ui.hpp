@@ -129,6 +129,17 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 </main>
 <script>
 let pairTimer=null;
+let formSeeded=false;
+let wifiDirty=false;
+function markWifiDirty(){ wifiDirty=true; }
+function fillWifiForm(d){
+  ssid.value=d.wifi_ssid||'';
+  hostname.value=d.hostname||'LumosOS-Bell';
+  useStatic.checked=!!d.wifi_use_static; toggleStatic();
+  ip.value=d.wifi_ip||''; gateway.value=d.wifi_gateway||'';
+  netmask.value=d.wifi_netmask||'255.255.255.0';
+  dns1.value=d.wifi_dns1||''; dns2.value=d.wifi_dns2||'';
+}
 const PINS_8266=[{g:4,n:'D2'},{g:5,n:'D1'},{g:14,n:'D5'},{g:12,n:'D6'},{g:13,n:'D7'}];
 const PINS_ESP=[{g:4,n:'GPIO 4'},{g:5,n:'GPIO 5'},{g:12,n:'GPIO 12'},{g:13,n:'GPIO 13'},{g:14,n:'GPIO 14'}];
 function pinList(board){return board==='esp8266'?PINS_8266:PINS_ESP;}
@@ -173,17 +184,16 @@ function renderPeers(d){
   box.innerHTML=list.map(p=>'<button type="button" class="secondary" onclick="pick(\''+p.mac+'\')">'+
     (p.name||'LumosOS')+' · '+p.mac+' · ch '+p.channel+' · RSSI '+p.rssi+'</button>').join('');
 }
-async function load(){
+async function load(forceForm){
   const r=await fetch('/api'); const d=await r.json();
-  fillPins(d.board, d.opto_pin||4);
+  if(!formSeeded || forceForm){
+    fillPins(d.board, d.opto_pin||4);
+    if(document.getElementById('rxLan') && d.rx_lan!=null) rxLan.value=d.rx_lan;
+    if(forceForm || !wifiDirty) fillWifiForm(d);
+    formSeeded=true;
+    if(forceForm) wifiDirty=false;
+  }
   updateWireHint(d.opto_level);
-  if(document.getElementById('rxLan') && d.rx_lan!=null) rxLan.value=d.rx_lan;
-  ssid.value=d.wifi_ssid||ssid.value||'';
-  hostname.value=d.hostname||'LumosOS-Bell';
-  useStatic.checked=!!d.wifi_use_static; toggleStatic();
-  ip.value=d.wifi_ip||''; gateway.value=d.wifi_gateway||'';
-  netmask.value=d.wifi_netmask||'255.255.255.0';
-  dns1.value=d.wifi_dns1||''; dns2.value=d.wifi_dns2||'';
   setPairCard(d);
   const retryBtn=document.getElementById('retryWifiBtn');
   if(retryBtn) retryBtn.style.display=(d.setup_mode && d.has_saved_wifi)?'block':'none';
@@ -244,7 +254,11 @@ async function scanWifi(){
     }
   }catch{ netlist.innerHTML='<option>Scan failed</option>'; }
 }
-netlist.addEventListener('change',e=>{ if(e.target.value) ssid.value=e.target.value; });
+['ssid','pass','hostname','ip','gateway','netmask','dns1','dns2'].forEach(id=>{
+  const el=document.getElementById(id); if(el) el.addEventListener('input', markWifiDirty);
+});
+if(useStatic) useStatic.addEventListener('change', markWifiDirty);
+netlist.addEventListener('change',e=>{ if(e.target.value){ ssid.value=e.target.value; wifiDirty=true; }});
 async function saveWifi(){
   const name=ssid.value.trim();
   if(!name){alert('Select or enter an SSID');return;}
@@ -258,6 +272,7 @@ async function saveWifi(){
     })});
     const t=await r.text();
     wifiMsg.textContent=t;
+    wifiDirty=false;
     alert('Connecting… then open http://lumosos-bell.local or the static IP. Setup hotspot will go away.');
   }catch(e){ wifiMsg.textContent='Failed: '+e.message; }
 }
@@ -279,7 +294,7 @@ async function savePin(){
   msg.textContent='Saving…';
   const body=new URLSearchParams({pin:String(pin.value), active_low:'1', rx_lan:rxLan.value.trim()||'-'});
   const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
-  msg.textContent=await r.text(); await load();
+  msg.textContent=await r.text(); await load(true);
 }
 async function testSend(){
   msg.textContent='Sending…';
