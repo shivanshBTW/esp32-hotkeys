@@ -57,6 +57,8 @@ private:
     bool started_{false};
     bool espnow_ready_{false};
     int configured_pin_{-1};
+    volatile std::uint32_t opto_edges_{0};
+    volatile std::uint32_t last_edge_ms_{0};
     std::uint8_t seq_{0};
     std::uint32_t last_send_ms_{0};
     int retries_left_{0};

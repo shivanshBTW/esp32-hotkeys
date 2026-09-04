@@ -98,6 +98,11 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 <label>Optocoupler pin</label>
 <select id="pin" onchange="updateWireHint()"></select>
 <p class="hint" id="wireHint">Collector to D2, emitter to GND.</p>
+<label>Receiver IP (Wi-Fi backup)</label>
+<input id="rxLan" placeholder="192.168.0.233"/>
+<p class="hint">ESP-NOW only works when both boards share the same 2.4 GHz channel. If they are on different APs (example: TP-Link vs Airtel), set the LED board IP here so a press can ring over Wi-Fi.</p>
+<p class="hint" id="optoLive">GPIO: waiting…</p>
+<pre id="gpioWatch"></pre>
 <pre id="pairBits"></pre>
 <button type="button" onclick="savePin()">Save pin</button>
 <button class="secondary" type="button" onclick="testSend()">Test send</button>
@@ -172,6 +177,7 @@ async function load(){
   const r=await fetch('/api'); const d=await r.json();
   fillPins(d.board, d.opto_pin||4);
   updateWireHint(d.opto_level);
+  if(document.getElementById('rxLan') && d.rx_lan!=null) rxLan.value=d.rx_lan;
   ssid.value=d.wifi_ssid||ssid.value||'';
   hostname.value=d.hostname||'LumosOS-Bell';
   useStatic.checked=!!d.wifi_use_static; toggleStatic();
@@ -198,8 +204,27 @@ async function load(){
     'hostname: '+(d.hostname||'—')+(d.wifi_connected?'  → http://lumosos-bell.local':''),
     'espnow: '+!!d.espnow_ready+'  paired: '+!!d.paired+'  if: '+(d.sta_linked?'STA':'AP'),
     'channel: '+(d.channel||'—'),
-    'opto: '+(d.opto_level===0?'LOW':(d.opto_level===1?'HIGH':'—'))+'  last_seq: '+(d.last_seq||0)
+    'opto: '+(d.opto_level===0?'LOW':(d.opto_level===1?'HIGH':'—'))+'  edges: '+(d.opto_edges||0)+'  last_seq: '+(d.last_seq||0)
   ].join('\n');
+  const live=document.getElementById('optoLive');
+  if(live){
+    const pinName=pin.selectedOptions[0]?pin.selectedOptions[0].textContent:'GPIO';
+    const lvl=d.opto_level===0?'LOW (should ring)':(d.opto_level===1?'HIGH (idle)':'—');
+    const edge=d.last_edge_ms>0?(' Last GPIO edge at '+d.last_edge_ms+' ms ('+(d.opto_edges||0)+' this boot).'):' No GPIO edge yet this boot — Test send does not count.';
+    live.textContent=pinName+' is '+lvl+'.'+edge;
+  }
+  const gw=document.getElementById('gpioWatch');
+  if(gw){
+    const names={4:'D2',5:'D1',12:'D6',13:'D7',14:'D5'};
+    const rows=d.gpio_watch||[];
+    gw.textContent=rows.length
+      ?rows.map(p=>{
+        const n=names[p.pin]||('GPIO '+p.pin);
+        const lv=p.level===0?'LOW ':'HIGH';
+        return n+' (GPIO '+p.pin+')  '+lv+'  edges '+ (p.edges||0);
+      }).join('\n')
+      :'Pin watch unavailable.';
+  }
   pairBits.textContent='scanning: '+!!d.scanning+'  pairing: '+!!d.pairing;
   renderPeers(d);
   if((d.pairing||d.scanning) && !pairTimer){ pairTimer=setInterval(load,1000); }
@@ -252,7 +277,7 @@ async function forgetWifi(){
 }
 async function savePin(){
   msg.textContent='Saving…';
-  const body=new URLSearchParams({pin:String(pin.value), active_low:'1'});
+  const body=new URLSearchParams({pin:String(pin.value), active_low:'1', rx_lan:rxLan.value.trim()||'-'});
   const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
   msg.textContent=await r.text(); await load();
 }

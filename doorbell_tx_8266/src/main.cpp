@@ -331,11 +331,23 @@ void handle_api() {
         doc["board"] = "esp8266";
         doc["own_mac"] = st.own_mac;
         doc["rx_mac"] = cfg.rx_mac_valid ? lumos::format_mac(cfg.rx_mac) : "";
+        doc["rx_lan"] = cfg.rx_lan;
         doc["paired"] = st.paired;
-        doc["channel"] = cfg.channel;
+        doc["channel"] = st.radio_channel ? st.radio_channel : cfg.channel;
         doc["opto_pin"] = cfg.opto_pin;
         doc["opto_level"] = st.opto_level;
+        doc["opto_edges"] = st.opto_edges;
+        doc["last_edge_ms"] = st.last_edge_ms;
         doc["active_low"] = cfg.active_low;
+        lumos::dbplat::GpioWatch watch[lumos::dbplat::kGpioWatchMax]{};
+        const int wn = lumos::dbplat::gpio_watch(watch, lumos::dbplat::kGpioWatchMax);
+        JsonArray pins = doc["gpio_watch"].to<JsonArray>();
+        for (int i = 0; i < wn; ++i) {
+            JsonObject p = pins.add<JsonObject>();
+            p["pin"] = watch[i].pin;
+            p["level"] = watch[i].level;
+            p["edges"] = watch[i].edges;
+        }
         doc["espnow_ready"] = st.espnow_ready;
         doc["last_seq"] = st.last_seq;
         doc["last_send_ms"] = st.last_send_ms;
@@ -406,6 +418,10 @@ void handle_save() {
     const auto pin = arg_or_form("pin");
     if (!pin.empty()) {
         cfg.opto_pin = std::atoi(pin.c_str());
+    }
+    const auto lan = arg_or_form("rx_lan");
+    if (!lan.empty()) {
+        cfg.rx_lan = lan == "-" ? "" : std::string(lan);
     }
     const auto al = arg_or_form("active_low");
     cfg.active_low = (al != "0" && al != "false");
@@ -563,6 +579,7 @@ void handle_config_get() {
     if (g_tx != nullptr) {
         const auto cfg = g_tx->config();
         device["rx_mac"] = cfg.rx_mac_valid ? lumos::format_mac(cfg.rx_mac) : "";
+        device["rx_lan"] = cfg.rx_lan;
         device["channel"] = cfg.channel;
         device["opto_pin"] = cfg.opto_pin;
         device["active_low"] = cfg.active_low;
@@ -601,6 +618,9 @@ void handle_config_post() {
         auto cfg = g_tx->config();
         if (const char* s = json_cstr(device["rx_mac"])) {
             cfg.rx_mac_valid = lumos::parse_mac(s, cfg.rx_mac);
+        }
+        if (const char* s = json_cstr(device["rx_lan"])) {
+            cfg.rx_lan = s;
         }
         if (device["channel"].is<int>()) {
             cfg.channel = static_cast<std::uint8_t>(std::clamp(device["channel"].as<int>(), 1, 13));

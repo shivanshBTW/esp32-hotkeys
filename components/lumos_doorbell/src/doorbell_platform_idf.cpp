@@ -36,7 +36,7 @@ std::uint64_t now_us() {
 }
 
 bool nvs_load(std::int32_t* pin, std::uint8_t* ch, std::uint8_t* alow, std::uint32_t* txid, char* rxmac,
-              std::size_t rxmac_sz) {
+              std::size_t rxmac_sz, char* rxlan, std::size_t rxlan_sz) {
     nvs_handle_t h{};
     if (nvs_open(kDoorbellTxNvsNs, NVS_READONLY, &h) != ESP_OK) {
         return false;
@@ -59,12 +59,18 @@ bool nvs_load(std::int32_t* pin, std::uint8_t* ch, std::uint8_t* alow, std::uint
             rxmac[0] = '\0';
         }
     }
+    if (rxlan != nullptr && rxlan_sz > 0) {
+        std::size_t len = rxlan_sz;
+        if (nvs_get_str(h, "rxlan", rxlan, &len) != ESP_OK) {
+            rxlan[0] = '\0';
+        }
+    }
     nvs_close(h);
     return true;
 }
 
 bool nvs_save(std::int32_t pin, std::uint8_t ch, std::uint8_t alow, std::uint32_t txid,
-              const char* rxmac) {
+              const char* rxmac, const char* rxlan) {
     nvs_handle_t h{};
     if (nvs_open(kDoorbellTxNvsNs, NVS_READWRITE, &h) != ESP_OK) {
         return false;
@@ -74,6 +80,7 @@ bool nvs_save(std::int32_t pin, std::uint8_t ch, std::uint8_t alow, std::uint32_
     nvs_set_u8(h, "alow", alow);
     nvs_set_u32(h, "txid", txid);
     nvs_set_str(h, "rxmac", rxmac != nullptr ? rxmac : "");
+    nvs_set_str(h, "rxlan", rxlan != nullptr ? rxlan : "");
     nvs_commit(h);
     nvs_close(h);
     return true;
@@ -205,5 +212,13 @@ void task_exit() {
 void set_pump(void (*)()) {}
 
 void poll() {}
+
+int gpio_watch(GpioWatch*, int) {
+    return 0;
+}
+
+bool lan_ring(const char*) {
+    return false;
+}
 
 } // namespace lumos::dbplat

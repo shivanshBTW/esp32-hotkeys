@@ -15,6 +15,7 @@ struct DoorbellTxConfig {
     std::uint8_t rx_mac[6]{};
     bool rx_mac_valid{false};
     std::uint32_t tx_id{1};
+    std::string rx_lan; // optional "192.168.0.233" HTTP backup when ESP-NOW channel mismatches
 };
 
 struct DoorbellTxStatus {
@@ -30,6 +31,9 @@ struct DoorbellTxStatus {
     int peer_count{0};
     DoorbellDiscoveredPeer peers[kDoorbellMaxPeers]{};
     int opto_level{-1}; // 0/1 after GPIO is configured
+    std::uint32_t opto_edges{0};
+    std::uint32_t last_edge_ms{0};
+    std::uint8_t radio_channel{0};
 };
 
 constexpr const char* kDoorbellTxNvsNs = "dbtx";

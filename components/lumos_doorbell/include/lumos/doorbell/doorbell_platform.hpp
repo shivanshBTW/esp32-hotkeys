@@ -25,12 +25,22 @@ enum TimerId : int {
 std::uint64_t now_us();
 
 bool nvs_load(std::int32_t* pin, std::uint8_t* ch, std::uint8_t* alow, std::uint32_t* txid, char* rxmac,
-              std::size_t rxmac_sz);
-bool nvs_save(std::int32_t pin, std::uint8_t ch, std::uint8_t alow, std::uint32_t txid, const char* rxmac);
+              std::size_t rxmac_sz, char* rxlan = nullptr, std::size_t rxlan_sz = 0);
+bool nvs_save(std::int32_t pin, std::uint8_t ch, std::uint8_t alow, std::uint32_t txid, const char* rxmac,
+              const char* rxlan = nullptr);
+bool lan_ring(const char* ip);
 
 void gpio_unhook(int pin);
 bool gpio_setup_input(int pin, bool pull_up, void (*isr)(void*), void* arg);
 int gpio_read(int pin);
+
+struct GpioWatch {
+    int pin{-1};
+    int level{-1};
+    std::uint32_t edges{0};
+};
+inline constexpr int kGpioWatchMax = 5;
+int gpio_watch(GpioWatch* out, int max);
 
 bool espnow_start(RecvFn cb);
 bool espnow_add_peer(const std::uint8_t mac[6], std::uint8_t channel, bool sta_if);

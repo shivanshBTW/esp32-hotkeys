@@ -56,6 +56,9 @@ void DoorbellTransmitter::apply_config(const DoorbellTxConfig& cfg) {
         cfg_.opto_pin = kDefaultOptoGpio;
     }
     cfg_.channel = static_cast<std::uint8_t>(std::clamp(static_cast<int>(cfg_.channel), 1, 13));
+    if (cfg_.rx_lan.size() > 31) {
+        cfg_.rx_lan.resize(31);
+    }
     if (started_) {
         if (!sta_linked_) {
             configure_wifi_channel();
@@ -70,12 +73,14 @@ void DoorbellTransmitter::load_nvs() {
     std::uint8_t ch = cfg_.channel;
     std::uint8_t al = cfg_.active_low ? 1 : 0;
     char mac[32]{};
-    if (!dbplat::nvs_load(&pin, &ch, &al, &cfg_.tx_id, mac, sizeof(mac))) {
+    char lan[32]{};
+    if (!dbplat::nvs_load(&pin, &ch, &al, &cfg_.tx_id, mac, sizeof(mac), lan, sizeof(lan))) {
         return;
     }
     cfg_.opto_pin = static_cast<int>(pin);
     cfg_.channel = ch;
     cfg_.active_low = al != 0;
+    cfg_.rx_lan = lan;
     if (mac[0] != '\0') {
         cfg_.rx_mac_valid = parse_mac(mac, cfg_.rx_mac);
     }
@@ -87,7 +92,8 @@ void DoorbellTransmitter::load_nvs() {
 
 void DoorbellTransmitter::save_nvs() {
     if (!dbplat::nvs_save(cfg_.opto_pin, cfg_.channel, cfg_.active_low ? 1 : 0, cfg_.tx_id,
-                          cfg_.rx_mac_valid ? format_mac(cfg_.rx_mac).c_str() : "")) {
+                          cfg_.rx_mac_valid ? format_mac(cfg_.rx_mac).c_str() : "",
+                          cfg_.rx_lan.c_str())) {
         log.error("nvs_open dbtx failed");
     }
 }
@@ -117,6 +123,9 @@ DoorbellTxStatus DoorbellTransmitter::status() const {
     if (configured_pin_ >= 0) {
         st.opto_level = dbplat::gpio_read(configured_pin_);
     }
+    st.opto_edges = opto_edges_;
+    st.last_edge_ms = last_edge_ms_;
+    st.radio_channel = radio_channel();
     return st;
 }
 
@@ -201,8 +210,12 @@ void DoorbellTransmitter::gpio_isr(void* arg) {
     if (self == nullptr) {
         return;
     }
+    self->opto_edges_++;
+    self->last_edge_ms_ = static_cast<std::uint32_t>(dbplat::now_us() / 1000ULL);
 #if defined(ARDUINO_ARCH_ESP8266)
     // Already deferred to loop(); Ticker debounce often misses short/AC opto pulses.
+    log.info("opto edge pin=%d level=%d n=%u", self->configured_pin_,
+             dbplat::gpio_read(self->configured_pin_), static_cast<unsigned>(self->opto_edges_));
     self->maybe_fire();
 #else
     dbplat::timer_stop(dbplat::TDebounce);
@@ -332,6 +345,13 @@ void DoorbellTransmitter::send_press(bool bump_seq) {
     } else {
         log.info("sent DOORBELL_PRESS seq=%u to %s%s", static_cast<unsigned>(seq_),
                  format_mac(cfg_.rx_mac).c_str(), bcast ? " +bcast" : "");
+    }
+    if (bump_seq && !cfg_.rx_lan.empty()) {
+        if (dbplat::lan_ring(cfg_.rx_lan.c_str())) {
+            log.info("lan ring http://%s/api/v1/doorbell/test", cfg_.rx_lan.c_str());
+        } else {
+            log.warn("lan ring failed http://%s/api/v1/doorbell/test", cfg_.rx_lan.c_str());
+        }
     }
 }
 

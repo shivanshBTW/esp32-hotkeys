@@ -3,14 +3,17 @@
 
 #include <Arduino.h>
 #include <EEPROM.h>
+#include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
 #include <Ticker.h>
+#include <WiFiClient.h>
 #include <espnow.h>
 
 extern "C" {
 #include "user_interface.h"
 }
 
+#include <cstdio>
 #include <cstring>
 
 namespace lumos::dbplat {
@@ -27,6 +30,7 @@ struct TxBlob {
     std::uint8_t alow;
     std::uint32_t txid;
     char rxmac[32];
+    char rxlan[32];
 };
 
 struct TimerSlot {
@@ -36,6 +40,7 @@ struct TimerSlot {
 };
 
 TimerSlot timers[3]{};
+Ticker gpio_sampler_{};
 RecvFn recv_cb{nullptr};
 void (*pump_fn)(){nullptr};
 TaskFn queued_fn{nullptr};
@@ -46,6 +51,9 @@ void (*gpio_isr_fn)(void*){nullptr};
 void* gpio_isr_arg{nullptr};
 int gpio_pin_{-1};
 int gpio_last_level_{-1};
+constexpr int kWatchPins[] = {4, 5, 12, 13, 14};
+int watch_last_[5]{-1, -1, -1, -1, -1};
+volatile std::uint32_t watch_edges_[5]{};
 bool eeprom_ready_{false};
 
 void ensure_eeprom() {
@@ -73,8 +81,35 @@ void fire2() {
 
 void (*fires[3])() = {&fire0, &fire1, &fire2};
 
-void ICACHE_RAM_ATTR raw_gpio_isr() {
-    gpio_edge_ = true;
+void IRAM_ATTR note_gpio_level(int level) {
+    if (gpio_last_level_ >= 0 && level != gpio_last_level_) {
+        gpio_edge_ = true;
+    }
+    gpio_last_level_ = level;
+}
+
+void IRAM_ATTR raw_gpio_isr() {
+    if (gpio_pin_ >= 0) {
+        note_gpio_level(digitalRead(gpio_pin_));
+    } else {
+        gpio_edge_ = true;
+    }
+}
+
+void IRAM_ATTR gpio_sample() {
+    for (int i = 0; i < 5; ++i) {
+        const int level = digitalRead(kWatchPins[i]);
+        if (watch_last_[i] >= 0 && level != watch_last_[i]) {
+            watch_edges_[i]++;
+            if (kWatchPins[i] == gpio_pin_) {
+                gpio_edge_ = true;
+            }
+        }
+        watch_last_[i] = level;
+    }
+    if (gpio_pin_ >= 0) {
+        note_gpio_level(digitalRead(gpio_pin_));
+    }
 }
 
 void arduino_recv(uint8_t* mac, uint8_t* data, uint8_t len) {
@@ -108,11 +143,11 @@ std::uint64_t now_us() {
 }
 
 bool nvs_load(std::int32_t* pin, std::uint8_t* ch, std::uint8_t* alow, std::uint32_t* txid, char* rxmac,
-              std::size_t rxmac_sz) {
+              std::size_t rxmac_sz, char* rxlan, std::size_t rxlan_sz) {
     ensure_eeprom();
     TxBlob blob{};
     EEPROM.get(kTxOff, blob);
-    if (std::memcmp(blob.magic, "DBTX", 4) != 0 || blob.ver != 1) {
+    if (std::memcmp(blob.magic, "DBTX", 4) != 0 || (blob.ver != 1 && blob.ver != 2)) {
         return false;
     }
     if (pin != nullptr) {
@@ -131,15 +166,23 @@ bool nvs_load(std::int32_t* pin, std::uint8_t* ch, std::uint8_t* alow, std::uint
         std::strncpy(rxmac, blob.rxmac, rxmac_sz - 1);
         rxmac[rxmac_sz - 1] = '\0';
     }
+    if (rxlan != nullptr && rxlan_sz > 0) {
+        if (blob.ver >= 2) {
+            std::strncpy(rxlan, blob.rxlan, rxlan_sz - 1);
+            rxlan[rxlan_sz - 1] = '\0';
+        } else {
+            rxlan[0] = '\0';
+        }
+    }
     return true;
 }
 
 bool nvs_save(std::int32_t pin, std::uint8_t ch, std::uint8_t alow, std::uint32_t txid,
-              const char* rxmac) {
+              const char* rxmac, const char* rxlan) {
     ensure_eeprom();
     TxBlob blob{};
     std::memcpy(blob.magic, "DBTX", 4);
-    blob.ver = 1;
+    blob.ver = 2;
     blob.pin = pin;
     blob.ch = ch;
     blob.alow = alow;
@@ -147,11 +190,32 @@ bool nvs_save(std::int32_t pin, std::uint8_t ch, std::uint8_t alow, std::uint32_
     if (rxmac != nullptr) {
         std::strncpy(blob.rxmac, rxmac, sizeof(blob.rxmac) - 1);
     }
+    if (rxlan != nullptr) {
+        std::strncpy(blob.rxlan, rxlan, sizeof(blob.rxlan) - 1);
+    }
     EEPROM.put(kTxOff, blob);
     return EEPROM.commit();
 }
 
+bool lan_ring(const char* ip) {
+    if (ip == nullptr || ip[0] == '\0') {
+        return false;
+    }
+    char url[80]{};
+    std::snprintf(url, sizeof(url), "http://%s/api/v1/doorbell/test", ip);
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(1500);
+    if (!http.begin(client, url)) {
+        return false;
+    }
+    const int code = http.POST("");
+    http.end();
+    return code > 0 && code < 400;
+}
+
 void gpio_unhook(int pin) {
+    gpio_sampler_.detach();
     detachInterrupt(digitalPinToInterrupt(pin));
 }
 
@@ -161,12 +225,32 @@ bool gpio_setup_input(int pin, bool pull_up, void (*isr)(void*), void* arg) {
     gpio_pin_ = pin;
     pinMode(pin, pull_up ? INPUT_PULLUP : INPUT);
     gpio_last_level_ = digitalRead(pin);
+    for (int i = 0; i < 5; ++i) {
+        pinMode(kWatchPins[i], INPUT_PULLUP);
+        watch_last_[i] = digitalRead(kWatchPins[i]);
+    }
     attachInterrupt(digitalPinToInterrupt(pin), &raw_gpio_isr, CHANGE);
+    // Loop() can stall on HTTP long enough to miss a 1–3 ms AC opto pulse if the
+    // GPIO ISR is also dropped during Wi-Fi. Sample in a 1 ms timer as backup.
+    gpio_sampler_.attach_ms(1, &gpio_sample);
     return true;
 }
 
 int gpio_read(int pin) {
     return digitalRead(pin);
+}
+
+int gpio_watch(GpioWatch* out, int max) {
+    if (out == nullptr || max <= 0) {
+        return 0;
+    }
+    const int n = max < 5 ? max : 5;
+    for (int i = 0; i < n; ++i) {
+        out[i].pin = kWatchPins[i];
+        out[i].level = digitalRead(kWatchPins[i]);
+        out[i].edges = watch_edges_[i];
+    }
+    return n;
 }
 
 bool espnow_start(RecvFn cb) {
@@ -288,11 +372,7 @@ void set_pump(void (*fn)()) {
 
 void poll() {
     if (gpio_pin_ >= 0) {
-        const int level = digitalRead(gpio_pin_);
-        if (gpio_last_level_ >= 0 && level != gpio_last_level_) {
-            gpio_edge_ = true;
-        }
-        gpio_last_level_ = level;
+        note_gpio_level(digitalRead(gpio_pin_));
     }
     if (gpio_edge_) {
         gpio_edge_ = false;

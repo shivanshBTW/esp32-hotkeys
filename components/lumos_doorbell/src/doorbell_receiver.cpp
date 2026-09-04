@@ -351,8 +351,12 @@ void DoorbellReceiver::note_peer(const std::uint8_t mac[6], const DoorbellPairHe
 
 void DoorbellReceiver::pulse_relay(std::uint16_t override_ms) {
     const auto& db = preferences_.device().doorbell;
+    const auto now = static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL);
+    if (last_ring_ms_ != 0 && (now - last_ring_ms_) < 800) {
+        return;
+    }
     set_relay(true);
-    last_ring_ms_ = static_cast<std::uint32_t>(esp_timer_get_time() / 1000ULL);
+    last_ring_ms_ = now;
     if (release_timer_ == nullptr) {
         return;
     }
