@@ -282,6 +282,8 @@ Result<void> HotkeysService::update(const HotkeysSettings& next, bool token_prov
     }
     settings_.row_pins = next.row_pins;
     settings_.col_pins = next.col_pins;
+    settings_.flip_x = next.flip_x;
+    settings_.flip_y = next.flip_y;
     settings_.actions = next.actions;
     clamp_hotkeys_settings(settings_);
     persist();
@@ -312,6 +314,8 @@ cJSON* HotkeysService::to_json(bool include_secrets) const {
 
     cJSON* kp = cJSON_AddObjectToObject(root, "keypad");
     cJSON_AddBoolToObject(kp, "enabled", settings_.keypad_enabled);
+    cJSON_AddBoolToObject(kp, "flip_x", settings_.flip_x);
+    cJSON_AddBoolToObject(kp, "flip_y", settings_.flip_y);
     cJSON* rows = cJSON_AddArrayToObject(kp, "row_pins");
     cJSON* cols = cJSON_AddArrayToObject(kp, "col_pins");
     for (int i = 0; i < 4; ++i) {
@@ -362,6 +366,12 @@ bool HotkeysService::merge_json(const cJSON* obj, HotkeysSettings& next, bool& t
                     next.col_pins[i] = n->valueint;
                 }
             }
+        }
+        if (const cJSON* v = jget(kp, "flip_x"); cJSON_IsBool(v)) {
+            next.flip_x = cJSON_IsTrue(v);
+        }
+        if (const cJSON* v = jget(kp, "flip_y"); cJSON_IsBool(v)) {
+            next.flip_y = cJSON_IsTrue(v);
         }
     }
 
@@ -570,6 +580,8 @@ void HotkeysService::persist() {
     cJSON_AddStringToObject(ha, "token", settings_.ha_token.c_str());
     cJSON* kp = cJSON_AddObjectToObject(root, "keypad");
     cJSON_AddBoolToObject(kp, "enabled", settings_.keypad_enabled);
+    cJSON_AddBoolToObject(kp, "flip_x", settings_.flip_x);
+    cJSON_AddBoolToObject(kp, "flip_y", settings_.flip_y);
     cJSON* rows = cJSON_AddArrayToObject(kp, "row_pins");
     cJSON* cols = cJSON_AddArrayToObject(kp, "col_pins");
     for (int i = 0; i < 4; ++i) {
@@ -720,12 +732,28 @@ void HotkeysService::scan_once() {
         if ((down & (1u << i)) == 0) {
             continue;
         }
-        last_key_ = i;
-        const auto& a = settings_.actions[i];
-        log.info("keypad press slot=%d name=%s type=%s raw=0x%04x", i, a.name.c_str(),
+        const int slot = map_physical_slot(i);
+        last_key_ = slot;
+        const auto& a = settings_.actions[slot];
+        log.info("keypad press physical=%d slot=%d name=%s type=%s raw=0x%04x", i, slot, a.name.c_str(),
                  hotkey_type_to_str(a.type), bits);
-        test_fire(i);
+        test_fire(slot);
     }
+}
+
+int HotkeysService::map_physical_slot(int physical) const {
+    if (physical < 0 || physical >= kHotkeySlotCount) {
+        return physical;
+    }
+    int row = physical / 4;
+    int col = physical % 4;
+    if (settings_.flip_x) {
+        col = 3 - col;
+    }
+    if (settings_.flip_y) {
+        row = 3 - row;
+    }
+    return row * 4 + col;
 }
 
 void HotkeysService::scan_task(void* arg) {

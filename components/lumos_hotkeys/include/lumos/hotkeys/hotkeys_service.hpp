@@ -47,6 +47,7 @@ private:
     void configure_keypad();
     void release_keypad_pins();
     void scan_once();
+    int map_physical_slot(int physical) const;
     static void scan_task(void* arg);
 
     Preferences& preferences_;

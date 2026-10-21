@@ -22,7 +22,8 @@ input,select,textarea,button{width:100%;padding:.65rem .75rem;border-radius:8px;
 textarea{min-height:4.2rem;font:13px/1.4 ui-monospace,monospace}
 button{background:var(--accent);color:#041018;border:none;font-weight:600;margin-top:.75rem;cursor:pointer}
 button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent)}
-button.tiny{margin-top:.4rem;padding:.4rem .55rem;font-size:.8rem}
+button.axis{width:auto;margin:.55rem .45rem 0 0}
+button.axis.on{background:var(--accent);color:#041018;border-color:var(--accent)}
 .row{display:grid;grid-template-columns:1fr auto;gap:.75rem;align-items:end}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
 .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem}
@@ -44,8 +45,9 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 .tabs button{width:auto;margin:0;padding:.7rem .95rem;border:none;border-radius:10px 10px 0 0;background:transparent;color:var(--muted);font-weight:600}
 .tabs button.on{color:#041018;background:var(--accent)}
 .panel{display:none}.panel.on{display:grid;gap:1rem}
-.cell{background:#0f141b;border:1px solid var(--line);border-radius:10px;padding:.5rem;text-align:left;color:var(--text);margin:0;min-height:4.4rem}
+.cell{position:relative;background:#0f141b;border:1px solid var(--line);border-radius:10px;padding:.5rem;text-align:left;color:var(--text);margin:0;min-height:4.4rem}
 .cell.on{border-color:var(--accent)}
+.cell.origin::after{content:'';position:absolute;top:.4rem;right:.4rem;width:.42rem;height:.42rem;border-radius:50%;background:var(--accent)}
 .cell b{display:block;font-size:.82rem}
 .cell small{display:block;color:var(--muted);font-size:.7rem;margin-top:.2rem}
 .peer{display:block;text-align:left;margin-top:.5rem}
@@ -68,6 +70,11 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 <h2>Keys</h2>
 <p class="hint">16 slots for a 4×4 pad. Test from here for now — matrix scan is not enabled yet.</p>
 <div id="pad" class="grid4"></div>
+<div>
+  <button class="secondary axis" type="button" id="flipX" onclick="toggleFlip('x')">Flip ↔</button>
+  <button class="secondary axis" type="button" id="flipY" onclick="toggleFlip('y')">Flip ↕</button>
+</div>
+<p class="hint">The dot is the membrane corner (R1+C1). Labels stay put. Press the same flip again to undo it.</p>
 <p id="fireStatus" class="hint">No fire yet this boot.</p>
 </section>
 <section>
@@ -248,6 +255,7 @@ pre{white-space:pre-wrap;background:#0f141b;padding:.75rem;border-radius:8px;fon
 </main>
 <script>
 let pairTimer=null, selected=0, actions=[], defaulted=false;
+let flipX=false, flipY=false;
 async function j(url,opts){const r=await fetch(url,opts); if(!r.ok) throw new Error(await r.text()); return r.json()}
 function toggleStatic(){document.getElementById('staticFields').classList.toggle('show', useStatic.checked);}
 function currentTab(){
@@ -327,17 +335,29 @@ function slotLabel(a,i){
   if(a&&a.url) return a.url;
   return 'Slot '+i;
 }
+function originSlot(){
+  return (flipY?3:0)*4+(flipX?3:0);
+}
+function syncFlips(){
+  const x=document.getElementById('flipX');
+  const y=document.getElementById('flipY');
+  if(x) x.classList.toggle('on', !!flipX);
+  if(y) y.classList.toggle('on', !!flipY);
+}
 function renderPad(){
   const pad=document.getElementById('pad');
+  const origin=originSlot();
   pad.innerHTML='';
   for(let i=0;i<16;i++){
     const a=actions[i]||{};
     const b=document.createElement('button');
-    b.type='button'; b.className='cell'+(i===selected?' on':'');
+    b.type='button';
+    b.className='cell'+(i===selected?' on':'')+(i===origin?' origin':'');
     b.innerHTML='<b>'+slotLabel(a,i)+'</b><small>'+(a.type==='ha'?'HA':'HTTP')+' · '+i+'</small>';
     b.onclick=()=>selectSlot(i);
     pad.appendChild(b);
   }
+  syncFlips();
 }
 function toggleType(){
   const ha=hkType.value==='ha';
@@ -583,6 +603,8 @@ async function loadHotkeys(){
   try{
     const d=await j('/api/v1/hotkeys');
     actions=d.actions||[];
+    flipX=!!(d.keypad&&d.keypad.flip_x);
+    flipY=!!(d.keypad&&d.keypad.flip_y);
     haUrl.value=(d.ha&&d.ha.base_url)||'';
     haTokenHint.textContent=d.ha&&d.ha.token_set?'A token is saved on the device.':'No HA token saved.';
     const rows=(d.keypad&&d.keypad.row_pins)||[16,17,18,19];
@@ -604,6 +626,16 @@ async function loadHotkeys(){
       :'No fire yet this boot.';
     selectSlot(selected);
   }catch(e){ hkMsg.textContent='Load failed: '+e.message; }
+}
+async function toggleFlip(axis){
+  const on=axis==='x'?!flipX:!flipY;
+  hkMsg.textContent='Saving orientation…';
+  try{
+    const keypad=axis==='x'?{flip_x:on}:{flip_y:on};
+    await j('/api/v1/hotkeys',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keypad})});
+    hkMsg.textContent=(axis==='x'?'Left–right':'Top–bottom')+' flip '+(on?'on.':'off.');
+    await loadHotkeys();
+  }catch(e){ hkMsg.textContent='Flip failed: '+e.message; }
 }
 async function saveSlot(){
   hkMsg.textContent='Saving…';

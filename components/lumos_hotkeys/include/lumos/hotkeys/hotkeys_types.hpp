@@ -41,6 +41,8 @@ struct HotkeysSettings {
     std::string ha_base_url;
     std::string ha_token;
     bool keypad_enabled{false};
+    bool flip_x{false};
+    bool flip_y{false};
     std::array<int, 4> row_pins{0, 0, 0, 0};
     std::array<int, 4> col_pins{0, 0, 0, 0};
     std::array<HotkeyAction, kHotkeySlotCount> actions{};
